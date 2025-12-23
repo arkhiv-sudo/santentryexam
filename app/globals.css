@@ -5,13 +5,6 @@
   --foreground: #171717;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
@@ -23,4 +16,49 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Global styles for select dropdowns - Force white background */
+select {
+  color-scheme: light !important;
+}
+
+select option {
+  background-color: #ffffff !important;
+  background: #ffffff !important;
+  color: #0f172a !important;
+  padding: 8px 12px !important;
+}
+
+select option:hover,
+select option:focus,
+select option:active {
+  background-color: #eff6ff !important;
+  background: #eff6ff !important;
+  color: #1e40af !important;
+}
+
+select option:checked {
+  background-color: #dbeafe !important;
+  background: linear-gradient(#dbeafe, #dbeafe) !important;
+  color: #1e40af !important;
+}
+
+/* Force light background even in dark mode */
+@media (prefers-color-scheme: dark) {
+  select {
+    color-scheme: light !important;
+    background-color: white !important;
+  }
+
+  select option {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  select option:checked {
+    background-color: #dbeafe !important;
+    background: #dbeafe !important;
+  }
 }

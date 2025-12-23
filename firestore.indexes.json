@@ -1,0 +1,33 @@
+{
+    "indexes": [
+        {
+            "collectionGroup": "questions",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "category",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "type",
+                    "order": "ASCENDING"
+                }
+            ]
+        },
+        {
+            "collectionGroup": "exams",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "scheduledAt",
+                    "order": "DESCENDING"
+                },
+                {
+                    "fieldPath": "status",
+                    "order": "ASCENDING"
+                }
+            ]
+        }
+    ],
+    "fieldOverrides": []
+}
