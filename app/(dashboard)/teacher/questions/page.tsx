@@ -33,7 +33,13 @@ export default function TeacherQuestionsPage() {
     const [authorFilter, setAuthorFilter] = useState<string | "all">("all");
     const [currentPage, setCurrentPage] = useState(0);
     const [lastVisibleDocs, setLastVisibleDocs] = useState<(QueryDocumentSnapshot<DocumentData> | null)[]>([]);
-    const [authors, setAuthors] = useState<UserProfile[]>([]);
+
+    // Fetch Authors with Caching (1 hour stable)
+    const { data: authors = [] } = useQuery({
+        queryKey: ["authors_list"],
+        queryFn: () => QuestionService.getUsersByRoles(["admin", "teacher"]),
+        staleTime: 60 * 60 * 1000,
+    });
 
     // Reset pagination when filter changes
     useEffect(() => {
@@ -41,11 +47,11 @@ export default function TeacherQuestionsPage() {
         setLastVisibleDocs([]);
     }, [typeFilter, gradeFilter, subjectFilter, authorFilter]);
 
-    // Fetch Subjects with Caching
+    // Fetch Subjects with Caching (1 hour stable)
     const { data: subjectsData = [] } = useQuery({
         queryKey: ["subjects_list"],
         queryFn: () => SettingsService.getSubjects(),
-        staleTime: 5 * 60 * 1000,
+        staleTime: 60 * 60 * 1000, // 1 hour
     });
 
     const subjectsMap = useMemo(() => {
@@ -79,16 +85,9 @@ export default function TeacherQuestionsPage() {
                 authorFilter
             );
         },
+        staleTime: 15 * 60 * 1000, // 15 mins
         placeholderData: (previousData) => previousData,
     });
-
-    useEffect(() => {
-        const fetchAuthors = async () => {
-            const data = await QuestionService.getUsersByRoles(["admin", "teacher"]);
-            setAuthors(data);
-        };
-        fetchAuthors();
-    }, []);
 
     // Update pagination markers when data changes
     useEffect(() => {

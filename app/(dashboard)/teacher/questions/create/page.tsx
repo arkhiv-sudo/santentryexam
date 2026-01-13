@@ -11,24 +11,20 @@ import { BulkQuestionUpload } from "@/components/BulkQuestionUpload";
 import { SettingsService } from "@/lib/services/settings-service";
 import { LayoutGrid, FileStack, ArrowLeft } from "lucide-react";
 
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+
 export default function CreateQuestionPage() {
     const { user } = useAuth();
     const router = useRouter();
+    const queryClient = useQueryClient();
     const [submitting, setSubmitting] = useState(false);
     const [activeTab, setActiveTab] = useState<'single' | 'bulk'>('single');
-    const [allSubjects, setAllSubjects] = useState<Subject[]>([]);
 
-    useEffect(() => {
-        const loadSubjects = async () => {
-            try {
-                const sData = await SettingsService.getSubjects();
-                setAllSubjects(sData);
-            } catch (error) {
-                console.error("Failed to load subjects:", error);
-            }
-        };
-        loadSubjects();
-    }, []);
+    const { data: allSubjects = [] } = useQuery({
+        queryKey: ["subjects_list"],
+        queryFn: () => SettingsService.getSubjects(),
+        staleTime: 60 * 60 * 1000, // 1 hour
+    });
 
     const handleSubmit = async (data: Omit<Question, "id">) => {
         if (!user) {
@@ -42,6 +38,8 @@ export default function CreateQuestionPage() {
                 ...data,
                 createdBy: user.uid
             });
+            queryClient.invalidateQueries({ queryKey: ["questions"] });
+            queryClient.invalidateQueries({ queryKey: ["admin_questions"] });
             toast.success("Асуулт амжилттай үүсгэгдлээ");
             router.push("/teacher/questions");
         } catch (error) {
@@ -102,7 +100,11 @@ export default function CreateQuestionPage() {
             ) : (
                 <BulkQuestionUpload
                     allSubjects={allSubjects}
-                    onComplete={() => router.push("/teacher/questions")}
+                    onComplete={() => {
+                        queryClient.invalidateQueries({ queryKey: ["questions"] });
+                        queryClient.invalidateQueries({ queryKey: ["admin_questions"] });
+                        router.push("/teacher/questions");
+                    }}
                 />
             )}
         </div>

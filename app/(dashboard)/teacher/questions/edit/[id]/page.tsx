@@ -9,41 +9,38 @@ import { toast } from "sonner";
 import { doc, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+
 export default function EditQuestionPage() {
     const router = useRouter();
     const params = useParams();
     const id = params.id as string;
+    const queryClient = useQueryClient();
 
-    const [question, setQuestion] = useState<Question | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [submitting, setSubmitting] = useState(false);
-
-    useEffect(() => {
-        const loadQuestion = async () => {
-            try {
-                const docRef = doc(db, "questions", id);
-                const docSnap = await getDoc(docRef);
-                if (docSnap.exists()) {
-                    setQuestion({ id: docSnap.id, ...docSnap.data() } as Question);
-                } else {
-                    toast.error("Асуулт олдсонгүй");
-                    router.push("/teacher/questions");
-                }
-            } catch (error) {
-                console.error("Error loading question:", error);
-                toast.error("Асуултыг ачаалахад алдаа гарлаа");
-            } finally {
-                setLoading(false);
+    const { data: question, isLoading: loading } = useQuery({
+        queryKey: ["question", id],
+        queryFn: async () => {
+            const docRef = doc(db, "questions", id);
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) {
+                return { id: docSnap.id, ...docSnap.data() } as Question;
             }
-        };
+            toast.error("Асуулт олдсонгүй");
+            router.push("/teacher/questions");
+            return null;
+        },
+        enabled: !!id,
+    });
 
-        if (id) loadQuestion();
-    }, [id, router]);
+    const [submitting, setSubmitting] = useState(false);
 
     const handleSubmit = async (data: Omit<Question, "id">) => {
         setSubmitting(true);
         try {
             await QuestionService.updateQuestion(id, data);
+            queryClient.invalidateQueries({ queryKey: ["questions"] });
+            queryClient.invalidateQueries({ queryKey: ["admin_questions"] });
+            queryClient.invalidateQueries({ queryKey: ["question", id] });
             toast.success("Асуулт амжилттай шинэчлэгдлээ");
             router.push("/teacher/questions");
         } catch (error) {
