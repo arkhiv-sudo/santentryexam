@@ -34,11 +34,11 @@ export default function QuestionsPage() {
     const [authorFilter, setAuthorFilter] = useState<string | "all">("all");
     const [currentPage, setCurrentPage] = useState(0);
     const [lastVisibleDocs, setLastVisibleDocs] = useState<(QueryDocumentSnapshot<DocumentData> | null)[]>([]);
-    // Fetch Authors with Caching
+    // Fetch Authors with Caching (1 hour stable)
     const { data: authors = [] } = useQuery({
         queryKey: ["authors_list"],
         queryFn: () => QuestionService.getUsersByRoles(["admin", "teacher"]),
-        staleTime: 5 * 60 * 1000,
+        staleTime: 60 * 60 * 1000, // 1 hour
     });
 
     // Reset pagination when filter changes
@@ -53,7 +53,7 @@ export default function QuestionsPage() {
     const { data: subjectsData = [] } = useQuery({
         queryKey: ["subjects_list"],
         queryFn: () => SettingsService.getSubjects(),
-        staleTime: 5 * 60 * 1000,
+        staleTime: 60 * 60 * 1000, // 1 hour
     });
 
     const subjectsMap = useMemo(() => {
@@ -87,6 +87,7 @@ export default function QuestionsPage() {
                 authorFilter
             );
         },
+        staleTime: 15 * 60 * 1000, // 15 mins for dynamic questions
         placeholderData: (previousData) => previousData,
     });
     useEffect(() => {

@@ -32,7 +32,7 @@ export default function AdminSubjectsPage() {
     const { data: subjects = [], isLoading: loading } = useQuery({
         queryKey: ["subjects"],
         queryFn: () => SettingsService.getSubjects(),
-        staleTime: 5 * 60 * 1000,
+        staleTime: 60 * 60 * 1000, // 1 hour
     });
 
     const [saving, setSaving] = useState(false);

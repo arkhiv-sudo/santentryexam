@@ -22,7 +22,7 @@ export default function AdminUsersPage() {
             const querySnapshot = await getDocs(collection(db, "users"));
             return querySnapshot.docs.map((doc) => doc.data() as UserProfile);
         },
-        staleTime: 5 * 60 * 1000, // 5 minutes cache
+        staleTime: 15 * 60 * 1000, // 15 minutes
     });
 
     useEffect(() => {
