@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-export default function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
     try {
         const session = request.cookies.get('__session')?.value;
         const role = request.cookies.get('role')?.value;
@@ -84,3 +84,5 @@ export const config = {
         '/((?!api|_next/static|_next/image|favicon.ico).*)',
     ],
 };
+
+export default proxy;
