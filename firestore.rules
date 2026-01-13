@@ -6,22 +6,16 @@ service cloud.firestore {
       return request.auth != null;
     }
     
-    function getUserData() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-    }
-    
     function hasRole(role) {
       return isAuthenticated() && 
-             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
     }
 
     // Users Collection
     match /users/{userId} {
       allow read: if isAuthenticated();
-      // Allow users to create their own profile or update if they're the owner or admin
       allow create: if isAuthenticated() && request.auth.uid == userId;
-      allow update, delete: if hasRole('admin') || (isAuthenticated() && request.auth.uid == userId);
+      allow update, delete: if (isAuthenticated() && request.auth.uid == userId) || hasRole('admin');
     }
 
     // Questions Collection
@@ -47,7 +41,7 @@ service cloud.firestore {
     // Grades Collection
     match /grades/{gradeId} {
       allow read: if isAuthenticated();
-      allow write: if false; // Grade management is removed
+      allow write: if hasRole('admin');
     }
 
     // Subjects Collection
@@ -65,8 +59,14 @@ service cloud.firestore {
 
     // System Collection (Stats, etc.)
     match /system/{docId} {
-      allow read: if hasRole('admin');
-      allow write: if false; // Updated via Cloud Functions (Admin SDK)
+      allow read: if isAuthenticated(); // Allow all logged in users to see counts
+      allow write: if hasRole('admin');
+    }
+
+    // Legacy Statistics Collection
+    match /statistics/{docId} {
+      allow read: if isAuthenticated();
+      allow write: if hasRole('admin');
     }
   }
 }

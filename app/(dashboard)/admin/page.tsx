@@ -38,15 +38,18 @@ export default function AdminDashboard() {
     useEffect(() => {
         if (profile?.role !== "admin") return;
 
-        // Real-time listener for statistics
-        const docRef = doc(db, "statistics", "global");
+        // Real-time listener for statistics (unified to system/stats)
+        const docRef = doc(db, "system", "stats");
         const unsubscribe = onSnapshot(docRef, (docSnap) => {
             if (docSnap.exists()) {
                 const data = docSnap.data();
                 const newStats = {
                     totalUsers: data.totalUsers || 0,
                     totalQuestions: data.totalQuestions || 0,
-                    totalExams: data.totalExams || 0
+                    totalExams: data.totalExams || 0,
+                    totalSubjects: data.totalSubjects || 0,
+                    totalSubmissions: data.totalSubmissions || 0,
+                    totalImages: data.totalImages || 0
                 };
                 setStats(newStats);
                 localStorage.setItem(STATS_CACHE_KEY, JSON.stringify(newStats));
