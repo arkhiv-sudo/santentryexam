@@ -25,21 +25,10 @@ export function proxy(request: NextRequest) {
         return NextResponse.redirect(new URL(`/${role}`, request.url));
     }
 
-    // 4. Role Based Access
-    if (pathname.startsWith('/admin') && role !== 'admin') {
-        return NextResponse.redirect(new URL('/', request.url));
-    }
-
-    if (pathname.startsWith('/teacher') && role !== 'teacher' && role !== 'admin') {
-        return NextResponse.redirect(new URL('/', request.url));
-    }
-
-    if (pathname.startsWith('/parent') && role !== 'parent' && role !== 'admin') {
-        return NextResponse.redirect(new URL('/', request.url));
-    }
-
     return NextResponse.next();
 }
+
+export default proxy;
 
 export const config = {
     matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
