@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect } from "react";
 import { ExamService } from "@/lib/services/exam-service";
 import { Exam } from "@/types";
 import { Button } from "@/components/ui/Button";
@@ -9,12 +9,18 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/AuthProvider";
 import { toast } from "sonner";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 export default function ExamsPage() {
-    const [exams, setExams] = useState<Exam[]>([]);
-    const [loading, setLoading] = useState(true);
+    const queryClient = useQueryClient();
     const router = useRouter();
     const { profile, loading: authLoading } = useAuth();
+
+    const { data: exams = [], isLoading: loading } = useQuery({
+        queryKey: ["exams"],
+        queryFn: () => ExamService.getAllExams(),
+        staleTime: 5 * 60 * 1000,
+    });
 
     useEffect(() => {
         if (!authLoading && profile?.role !== "admin") {
@@ -22,26 +28,11 @@ export default function ExamsPage() {
         }
     }, [profile, authLoading, router]);
 
-    useEffect(() => {
-        loadExams();
-    }, []);
-
-    const loadExams = async () => {
-        try {
-            const data = await ExamService.getAllExams();
-            setExams(data);
-        } catch (error) {
-            console.error("Failed to load exams", error);
-        } finally {
-            setLoading(false);
-        }
-    };
-
     const handleDelete = async (id: string) => {
         if (!confirm("Та энэ шалгалтыг устгахдаа итгэлтэй байна уу?")) return;
         try {
             await ExamService.deleteExam(id);
-            setExams(prev => prev.filter(e => e.id !== id));
+            queryClient.invalidateQueries({ queryKey: ["exams"] });
             toast.success("Шалгалт амжилттай устгагдлаа");
         } catch (error) {
             toast.error("Шалгалтыг устгахад алдаа гарлаа");
@@ -51,7 +42,7 @@ export default function ExamsPage() {
     const handleStatusChange = async (examId: string, newStatus: Exam["status"]) => {
         try {
             await ExamService.updateExam(examId, { status: newStatus });
-            setExams(prev => prev.map(e => e.id === examId ? { ...e, status: newStatus } : e));
+            queryClient.invalidateQueries({ queryKey: ["exams"] });
             toast.success("Төлөв амжилттай шинэчлэгдлээ");
         } catch (error) {
             toast.error("Төлөв өөрчлөхөд алдаа гарлаа");

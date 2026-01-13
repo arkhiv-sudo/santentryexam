@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { collection, getDocs, doc, updateDoc } from "firebase/firestore";
+import { useEffect } from "react";
+import { collection, getDocs } from "firebase/firestore";
 import { db, auth } from "@/lib/firebase";
 import { UserProfile, UserRole } from "@/types";
 import { Button } from "@/components/ui/Button";
@@ -10,36 +10,26 @@ import { Select } from "@/components/ui/Select";
 import { useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 export default function AdminUsersPage() {
     const { profile, loading: authLoading } = useAuth();
-    const [users, setUsers] = useState<UserProfile[]>([]);
-    const [loading, setLoading] = useState(true);
+    const queryClient = useQueryClient();
     const router = useRouter();
+    const { data: users = [], isLoading: loading } = useQuery<UserProfile[]>({
+        queryKey: ["users"],
+        queryFn: async () => {
+            const querySnapshot = await getDocs(collection(db, "users"));
+            return querySnapshot.docs.map((doc) => doc.data() as UserProfile);
+        },
+        staleTime: 5 * 60 * 1000, // 5 minutes cache
+    });
 
     useEffect(() => {
         if (!authLoading && profile?.role !== "admin") {
             router.push("/");
         }
     }, [profile, authLoading, router]);
-
-    const fetchUsers = async () => {
-        try {
-            const querySnapshot = await getDocs(collection(db, "users"));
-            const usersData = querySnapshot.docs.map((doc) => doc.data() as UserProfile);
-            setUsers(usersData);
-        } catch (error) {
-            console.error("Error fetching users:", error);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        if (profile?.role === "admin") {
-            fetchUsers();
-        }
-    }, [profile]);
 
     const handleRoleUpdate = async (uid: string, newRole: UserRole) => {
         try {
@@ -59,9 +49,7 @@ export default function AdminUsersPage() {
             }
 
             // Also update Firestore for consistency/UI (optional but good for sync)
-            await updateDoc(doc(db, "users", uid), { role: newRole });
-
-            setUsers(users.map(u => u.uid === uid ? { ...u, role: newRole } : u));
+            queryClient.invalidateQueries({ queryKey: ["users"] });
             toast.success("Эрх амжилттай шинэчлэгдлээ");
         } catch (error: any) {
             console.error("Error updating role:", error);

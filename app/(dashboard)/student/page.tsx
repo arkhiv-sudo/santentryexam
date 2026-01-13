@@ -9,30 +9,23 @@ import { collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { Exam } from "@/types";
 
+import { useQuery } from "@tanstack/react-query";
+
 export default function StudentDashboard() {
     const { profile } = useAuth();
-    const [exams, setExams] = useState<Exam[]>([]);
-    const [loading, setLoading] = useState(true);
 
-    useEffect(() => {
-        const fetchExams = async () => {
-            try {
-                const q = query(collection(db, "exams"), where("status", "==", "published"));
-                const querySnapshot = await getDocs(q);
-                const fetchedExams = querySnapshot.docs.map(doc => ({
-                    id: doc.id,
-                    ...doc.data()
-                })) as Exam[];
-                setExams(fetchedExams);
-            } catch (error) {
-                console.error("Error fetching exams:", error);
-            } finally {
-                setLoading(false);
-            }
-        };
-
-        fetchExams();
-    }, []);
+    const { data: exams = [], isLoading: loading } = useQuery({
+        queryKey: ["available_exams"],
+        queryFn: async () => {
+            const q = query(collection(db, "exams"), where("status", "==", "published"));
+            const querySnapshot = await getDocs(q);
+            return querySnapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            })) as Exam[];
+        },
+        staleTime: 5 * 60 * 1000,
+    });
 
     return (
         <div className="space-y-8">

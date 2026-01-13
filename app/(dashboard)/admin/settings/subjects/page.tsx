@@ -11,6 +11,8 @@ import { toast } from "sonner";
 import { Trash2, Plus, ArrowLeft, Download, Upload, Save, X } from "lucide-react";
 import Link from "next/link";
 
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+
 const GRADES_MAP: Record<string, string> = {
     "1": "1-р анги", "2": "2-р анги", "3": "3-р анги", "4": "4-р анги",
     "5": "5-р анги", "6": "6-р анги", "7": "7-р анги", "8": "8-р анги",
@@ -26,10 +28,14 @@ interface PendingSubject {
 }
 
 export default function AdminSubjectsPage() {
-    const [subjects, setSubjects] = useState<Subject[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState(false);
+    const queryClient = useQueryClient();
+    const { data: subjects = [], isLoading: loading } = useQuery({
+        queryKey: ["subjects"],
+        queryFn: () => SettingsService.getSubjects(),
+        staleTime: 5 * 60 * 1000,
+    });
 
+    const [saving, setSaving] = useState(false);
     const [newName, setNewName] = useState("");
     const [selectedGradeId, setSelectedGradeId] = useState("1");
     const [filterGradeId, setFilterGradeId] = useState("all");
@@ -37,22 +43,6 @@ export default function AdminSubjectsPage() {
     // CSV Bulk Upload State
     const [pendingSubjects, setPendingSubjects] = useState<PendingSubject[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
-
-    useEffect(() => {
-        loadData();
-    }, []);
-
-    const loadData = async () => {
-        try {
-            const sData = await SettingsService.getSubjects();
-            setSubjects(sData);
-        } catch (error) {
-            console.error("Load subjects error:", error);
-            toast.error("Өгөгдлийг ачаалахад алдаа гарлаа");
-        } finally {
-            setLoading(false);
-        }
-    };
 
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -63,7 +53,7 @@ export default function AdminSubjectsPage() {
         try {
             await SettingsService.createSubject(newName, selectedGradeId);
             setNewName("");
-            loadData();
+            queryClient.invalidateQueries({ queryKey: ["subjects"] });
             toast.success("Сэдэв амжилттай нэмэгдлээ");
         } catch (error) {
             toast.error("Алдаа гарлаа");
@@ -74,7 +64,7 @@ export default function AdminSubjectsPage() {
         if (!confirm("Та устгахдаа итгэлтэй байна уу?")) return;
         try {
             await SettingsService.deleteSubject(id);
-            setSubjects(prev => prev.filter(s => s.id !== id));
+            queryClient.invalidateQueries({ queryKey: ["subjects"] });
             toast.success("Устгагдлаа");
         } catch (error) {
             toast.error("Устгахад алдаа гарлаа");
@@ -143,7 +133,7 @@ export default function AdminSubjectsPage() {
 
             toast.success(`${pendingSubjects.length} сэдэв амжилттай хадгалагдлаа`);
             setPendingSubjects([]);
-            loadData();
+            queryClient.invalidateQueries({ queryKey: ["subjects"] });
         } catch (error) {
             toast.error("Бөөнөөр хадгалахад алдаа гарлаа");
         } finally {

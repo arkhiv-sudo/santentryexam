@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-export function proxy(request: NextRequest) {
+export default function proxy(request: NextRequest) {
     try {
         const { pathname } = request.nextUrl;
         const session = request.cookies.get('__session')?.value;
@@ -19,16 +19,18 @@ export function proxy(request: NextRequest) {
             return NextResponse.redirect(loginUrl);
         }
 
-        // 2. Authenticated user redirection from auth pages
+        // 2. Auth pages redirection for logged-in users
         if (session && (pathname === '/login' || pathname === '/signup')) {
             const destUrl = request.nextUrl.clone();
             destUrl.pathname = role ? `/${role}` : '/';
             return NextResponse.redirect(destUrl);
         }
 
-        // 3. Simple Role Based Access check
+        // 3. Simple RBAC
         if (pathname.startsWith('/admin') && role !== 'admin') {
-            return NextResponse.redirect(new URL('/', request.url));
+            const homeUrl = request.nextUrl.clone();
+            homeUrl.pathname = '/';
+            return NextResponse.redirect(homeUrl);
         }
 
         return NextResponse.next();
