@@ -11,7 +11,9 @@ service cloud.firestore {
     }
     
     function hasRole(role) {
-      return isAuthenticated() && getUserData().role == role;
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
     }
 
     // Users Collection
@@ -25,13 +27,14 @@ service cloud.firestore {
     // Questions Collection
     match /questions/{questionId} {
       allow read: if isAuthenticated();
-      allow write: if hasRole('admin') || hasRole('teacher');
+      allow create: if hasRole('admin') || hasRole('teacher');
+      allow update, delete: if hasRole('admin') || (hasRole('teacher') && resource.data.createdBy == request.auth.uid);
     }
 
     // Exams Collection
     match /exams/{examId} {
       allow read: if isAuthenticated();
-      allow write: if hasRole('admin') || hasRole('teacher');
+      allow write: if hasRole('admin');
     }
 
     // Submissions Collection
@@ -39,6 +42,31 @@ service cloud.firestore {
       allow read: if hasRole('admin') || hasRole('teacher') || (isAuthenticated() && resource.data.studentId == request.auth.uid);
       allow create: if isAuthenticated() && request.resource.data.studentId == request.auth.uid;
       allow update, delete: if hasRole('admin');
+    }
+
+    // Grades Collection
+    match /grades/{gradeId} {
+      allow read: if isAuthenticated();
+      allow write: if false; // Grade management is removed
+    }
+
+    // Subjects Collection
+    match /subjects/{subjectId} {
+      allow read: if isAuthenticated();
+      allow write: if hasRole('admin');
+    }
+
+    // Image Index Collection (Global Deduplication)
+    match /image_index/{hash} {
+      allow read: if isAuthenticated();
+      allow create: if hasRole('admin') || hasRole('teacher');
+      allow update, delete: if hasRole('admin');
+    }
+
+    // System Collection (Stats, etc.)
+    match /system/{docId} {
+      allow read: if hasRole('admin');
+      allow write: if false; // Updated via Cloud Functions (Admin SDK)
     }
   }
 }

@@ -13,11 +13,16 @@ export function proxy(request: NextRequest) {
     }
 
     // 2. If logged in and trying to access auth pages, redirect to dashboard
-    if (session && (pathname === '/login' || pathname === '/signup')) {
+    // Only redirect if we have both session and role to avoid loops on expired sessions
+    // Also skip if 'expired' param is present to break redirect loops
+    if (session && role && (pathname === '/login' || pathname === '/signup')) {
+        if (request.nextUrl.searchParams.has('expired')) {
+            return NextResponse.next();
+        }
         if (role === 'admin') return NextResponse.redirect(new URL('/admin', request.url));
         if (role === 'teacher') return NextResponse.redirect(new URL('/teacher', request.url));
         if (role === 'parent') return NextResponse.redirect(new URL('/parent', request.url));
-        return NextResponse.redirect(new URL('/student', request.url));
+        if (role === 'student') return NextResponse.redirect(new URL('/student', request.url));
     }
 
     // 2.5. If logged in and accessing root path, redirect to role-specific dashboard

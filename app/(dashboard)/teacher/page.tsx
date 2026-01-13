@@ -10,19 +10,19 @@ export default function TeacherDashboard() {
 
     const teacherCards = [
         {
-            title: "Шалгалт үүсгэх",
-            description: "Шинэ шалгалт үүсгэж, асуултууд нэмэх",
+            title: "Асуулт үүсгэх",
+            description: "Шинэ асуулт үүсгэж сан-даа нэмэх",
             icon: PlusCircle,
-            href: "/teacher/exams/create",
+            href: "/teacher/questions/create",
             gradient: "from-blue-500 to-indigo-500",
             iconBg: "bg-blue-100",
             iconColor: "text-blue-600"
         },
         {
-            title: "Миний асуултууд",
-            description: "Таны үүсгэсэн асуултуудын сан",
+            title: "Асуултын сан",
+            description: "Таны үүсгэсэн асуултуудыг удирдах",
             icon: BookOpen,
-            href: "/admin/questions", // Temporarily using admin questions with filter logic
+            href: "/teacher/questions",
             gradient: "from-emerald-500 to-teal-500",
             iconBg: "bg-emerald-100",
             iconColor: "text-emerald-600"

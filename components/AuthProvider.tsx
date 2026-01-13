@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState, useRef } from "react";
 import { User, onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 import { doc, getDoc } from "firebase/firestore";
@@ -26,11 +26,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [profile, setProfile] = useState<UserProfile | null>(null);
     const [loading, setLoading] = useState(true);
 
+    const lastRefreshRef = useRef<number>(0);
+
     useEffect(() => {
         const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
             if (firebaseUser) {
-                // Force refresh to get latest claims
-                const tokenResult = await firebaseUser.getIdTokenResult(true);
+                // Remove getIdTokenResult(true) as it forces a refresh and triggers onIdTokenChanged
+                const tokenResult = await firebaseUser.getIdTokenResult();
                 const role = (tokenResult.claims.role as UserProfile['role']) || 'student';
 
                 setUser(firebaseUser);
@@ -84,7 +86,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setLoading(false);
         });
 
-        return () => unsubscribe();
+        // Add ID token listener for session auto-refresh
+        const unsubscribeToken = auth.onIdTokenChanged(async (firebaseUser) => {
+            if (firebaseUser) {
+                const now = Date.now();
+                // Avoid refreshing more than once every 10 seconds
+                if (now - lastRefreshRef.current < 10000) return;
+                lastRefreshRef.current = now;
+
+                console.log("ID Token changed, refreshing session cookie...");
+                const idToken = await firebaseUser.getIdToken();
+                try {
+                    await fetch("/api/auth/login", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ idToken }),
+                    });
+                } catch (e) {
+                    console.error("Failed to auto-refresh session", e);
+                }
+            }
+        });
+
+        return () => {
+            unsubscribe();
+            unsubscribeToken();
+        };
     }, []);
 
     const refreshSession = async () => {

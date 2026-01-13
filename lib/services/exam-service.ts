@@ -2,6 +2,7 @@ import { db } from "@/lib/firebase";
 import {
     collection,
     getDocs,
+    getDoc, // Added getDoc
     addDoc,
     updateDoc,
     deleteDoc,
@@ -25,11 +26,32 @@ export const ExamService = {
                     id: doc.id,
                     ...data,
                     // Convert Firestore Timestamp to Date if necessary
-                    scheduledAt: data.scheduledAt?.toDate ? data.scheduledAt.toDate() : new Date(data.scheduledAt)
+                    scheduledAt: data.scheduledAt?.toDate ? data.scheduledAt.toDate() : new Date(data.scheduledAt),
+                    registrationEndDate: data.registrationEndDate?.toDate ? data.registrationEndDate.toDate() : new Date(data.registrationEndDate)
                 } as Exam;
             });
         } catch (error) {
             console.error("Error fetching exams:", error);
+            throw error;
+        }
+    },
+
+    getExamById: async (id: string): Promise<Exam | null> => {
+        try {
+            const docRef = doc(db, COLLECTION_NAME, id);
+            const snapshot = await getDoc(docRef); // Changed to getDoc
+
+            if (!snapshot.exists()) return null; // Corrected check for existence
+
+            const data = snapshot.data();
+            return {
+                id: snapshot.id, // Corrected to snapshot.id
+                ...data,
+                scheduledAt: data.scheduledAt?.toDate ? data.scheduledAt.toDate() : new Date(data.scheduledAt),
+                registrationEndDate: data.registrationEndDate?.toDate ? data.registrationEndDate.toDate() : new Date(data.registrationEndDate)
+            } as Exam;
+        } catch (error) {
+            console.error("Error fetching exam by id:", error);
             throw error;
         }
     },

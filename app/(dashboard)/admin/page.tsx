@@ -4,21 +4,63 @@ import { useAuth } from "@/components/AuthProvider";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Users, FileQuestion, ClipboardList, Settings, TrendingUp, Award, BookOpen } from "lucide-react";
+import { Users, FileQuestion, ClipboardList, Settings, Award, BookOpen, RefreshCw } from "lucide-react";
+import { db, functions } from "@/lib/firebase";
+import { doc, onSnapshot } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { toast } from "sonner";
+
+const STATS_CACHE_KEY = "admin_stats_cache";
 
 export default function AdminDashboard() {
-    const { profile, loading } = useAuth();
+    const { profile, loading: authLoading } = useAuth();
     const router = useRouter();
 
+    // Initial state from localStorage if available
+    const [stats, setStats] = useState(() => {
+        if (typeof window !== 'undefined') {
+            const cached = localStorage.getItem(STATS_CACHE_KEY);
+            return cached ? JSON.parse(cached) : { totalUsers: 0, totalQuestions: 0, totalExams: 0 };
+        }
+        return { totalUsers: 0, totalQuestions: 0, totalExams: 0 };
+    });
+
+    const [loadingStats, setLoadingStats] = useState(true);
+
     useEffect(() => {
-        if (!loading && profile?.role !== "admin") {
+        if (!authLoading && profile?.role !== "admin") {
             router.push("/");
         }
-    }, [profile, loading, router]);
+    }, [profile, authLoading, router]);
 
-    if (loading) return <div className="p-8 text-center">Уншиж байна...</div>;
+    useEffect(() => {
+        if (profile?.role !== "admin") return;
+
+        // Real-time listener for statistics
+        const docRef = doc(db, "statistics", "global");
+        const unsubscribe = onSnapshot(docRef, (docSnap) => {
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                const newStats = {
+                    totalUsers: data.totalUsers || 0,
+                    totalQuestions: data.totalQuestions || 0,
+                    totalExams: data.totalExams || 0
+                };
+                setStats(newStats);
+                localStorage.setItem(STATS_CACHE_KEY, JSON.stringify(newStats));
+            }
+            setLoadingStats(false);
+        }, (error) => {
+            console.error("Stats listener error:", error);
+            setLoadingStats(false);
+        });
+
+        return () => unsubscribe();
+    }, [profile]);
+
+    if (authLoading) return <div className="p-8 text-center text-slate-500">Уншиж байна...</div>;
 
     const adminCards = [
         {
@@ -60,20 +102,22 @@ export default function AdminDashboard() {
     ];
 
     const statsCards = [
-        { label: "Нийт хэрэглэгч", value: "-", icon: Users, color: "text-blue-600", bg: "bg-blue-50" },
-        { label: "Нийт асуулт", value: "-", icon: BookOpen, color: "text-green-600", bg: "bg-green-50" },
-        { label: "Идэвхтэй шалгалт", value: "-", icon: Award, color: "text-purple-600", bg: "bg-purple-50" }
+        { label: "Нийт хэрэглэгч", value: stats.totalUsers, icon: Users, color: "text-blue-600", bg: "bg-blue-50" },
+        { label: "Нийт асуулт", value: stats.totalQuestions, icon: BookOpen, color: "text-green-600", bg: "bg-green-50" },
+        { label: "Идэвхтэй шалгалт", value: stats.totalExams, icon: Award, color: "text-purple-600", bg: "bg-purple-50" }
     ];
 
     return (
         <div className="space-y-8">
             {/* Subtle Header */}
             <div className="relative overflow-hidden rounded-xl bg-gradient-to-r from-slate-50 to-blue-50 p-8 border border-slate-200">
-                <div>
-                    <h1 className="text-4xl font-bold tracking-tight text-slate-900 mb-2">Админы хянах самбар</h1>
-                    <p className="text-slate-600 text-lg">
-                        Тавтай морил, {profile?.lastName} {profile?.firstName}
-                    </p>
+                <div className="relative z-10">
+                    <div>
+                        <h1 className="text-4xl font-bold tracking-tight text-slate-900 mb-2">Админы хянах самбар</h1>
+                        <p className="text-slate-600 text-lg">
+                            Тавтай морил, {profile?.lastName} {profile?.firstName}
+                        </p>
+                    </div>
                 </div>
             </div>
 
@@ -87,7 +131,11 @@ export default function AdminDashboard() {
                                 <div className="flex items-center justify-between">
                                     <div>
                                         <p className="text-sm font-medium text-slate-600 mb-1">{stat.label}</p>
-                                        <p className="text-3xl font-bold text-slate-900">{stat.value}</p>
+                                        <div className="flex items-baseline gap-2">
+                                            <p className="text-3xl font-bold text-slate-900">
+                                                {loadingStats ? "..." : stat.value}
+                                            </p>
+                                        </div>
                                     </div>
                                     <div className={`${stat.bg} p-4 rounded-2xl`}>
                                         <Icon className={`w-8 h-8 ${stat.color}`} />

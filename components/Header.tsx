@@ -48,13 +48,14 @@ export default function Header() {
                 { label: "Хэрэглэгчид", href: "/admin/users", icon: Users },
                 { label: "Асуултын сан", href: "/admin/questions", icon: FileQuestion },
                 { label: "Шалгалтууд", href: "/admin/exams", icon: BookOpen },
+                { label: "Сэдвүүд", href: "/admin/settings/subjects", icon: BookOpen },
             ];
         }
         if (profile?.role === 'teacher') {
             return [
                 { label: "Хянах самбар", href: "/teacher", icon: ClipboardList },
-                { label: "Миний шалгалтууд", href: "/teacher/exams", icon: BookOpen },
-                { label: "Шалгалт үүсгэх", href: "/teacher/exams/create", icon: FileQuestion },
+                { label: "Асуултын сан", href: "/teacher/questions", icon: BookOpen },
+                { label: "Асуулт үүсгэх", href: "/teacher/questions/create", icon: FileQuestion },
             ];
         }
         if (profile?.role === 'student') {

@@ -48,10 +48,14 @@ export default function ExamsPage() {
         }
     };
 
-    const statusLabels: Record<string, string> = {
-        published: "Нийтлэгдсэн",
-        archived: "Архивлагдсан",
-        draft: "Ноорог"
+    const handleStatusChange = async (examId: string, newStatus: Exam["status"]) => {
+        try {
+            await ExamService.updateExam(examId, { status: newStatus });
+            setExams(prev => prev.map(e => e.id === examId ? { ...e, status: newStatus } : e));
+            toast.success("Төлөв амжилттай шинэчлэгдлээ");
+        } catch (error) {
+            toast.error("Төлөв өөрчлөхөд алдаа гарлаа");
+        }
     };
 
     if (authLoading || loading) return <div className="p-8 text-center">Уншиж байна...</div>;
@@ -80,6 +84,7 @@ export default function ExamsPage() {
                             <thead className="bg-gray-50 text-gray-900 font-semibold border-b border-gray-200">
                                 <tr>
                                     <th className="px-6 py-4">Гарчиг</th>
+                                    <th className="px-6 py-4 text-center">Анги</th>
                                     <th className="px-6 py-4">Товлосон огноо</th>
                                     <th className="px-6 py-4">Үргэлжлэх хугацаа</th>
                                     <th className="px-6 py-4 text-center">Асуултууд</th>
@@ -90,34 +95,47 @@ export default function ExamsPage() {
                             <tbody className="divide-y divide-gray-100">
                                 {loading ? (
                                     <tr>
-                                        <td colSpan={6} className="px-6 py-8 text-center text-gray-500">Шалгалтуудыг ачаалж байна...</td>
+                                        <td colSpan={7} className="px-6 py-8 text-center text-gray-500">Шалгалтуудыг ачаалж байна...</td>
                                     </tr>
                                 ) : exams.length === 0 ? (
                                     <tr>
-                                        <td colSpan={6} className="px-6 py-8 text-center text-gray-500">Шалгалт олдсонгүй. "Шинэ шалгалт үүсгэх" товчийг дарж эхэлнэ үү.</td>
+                                        <td colSpan={7} className="px-6 py-8 text-center text-gray-500">Шалгалт олдсонгүй. "Шинэ шалгалт үүсгэх" товчийг дарж эхэлнэ үү.</td>
                                     </tr>
                                 ) : (
                                     exams.map((exam) => (
                                         <tr key={exam.id} className="hover:bg-gray-50/50 transition-colors">
                                             <td className="px-6 py-4 font-medium text-gray-900">{exam.title}</td>
+                                            <td className="px-6 py-4 text-center">
+                                                <span className="bg-slate-100 px-2 py-1 rounded text-xs font-bold text-slate-600">
+                                                    {exam.grade}-р анги
+                                                </span>
+                                            </td>
                                             <td className="px-6 py-4 text-gray-500">
                                                 {new Date(exam.scheduledAt).toLocaleDateString()} {new Date(exam.scheduledAt).toLocaleTimeString()}
                                             </td>
                                             <td className="px-6 py-4 text-gray-500">{exam.duration} минут</td>
                                             <td className="px-6 py-4 text-center text-gray-500">
                                                 <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                                                    {exam.questionIds?.length || 0}
+                                                    {exam.maxQuestions || 0}
                                                 </span>
                                             </td>
                                             <td className="px-6 py-4">
-                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize
-                                                    ${exam.status === 'published' ? 'bg-green-100 text-green-800' :
-                                                        exam.status === 'archived' ? 'bg-gray-100 text-gray-800' : 'bg-yellow-100 text-yellow-800'}`}>
-                                                    {statusLabels[exam.status] || exam.status}
-                                                </span>
+                                                <select
+                                                    value={exam.status}
+                                                    onChange={(e) => handleStatusChange(exam.id, e.target.value as Exam["status"])}
+                                                    className={`text-xs font-medium rounded-full px-2 py-1 border-none focus:ring-2 focus:ring-blue-500 cursor-pointer
+                                                        ${exam.status === 'published' ? 'bg-green-100 text-green-800' :
+                                                            exam.status === 'archived' ? 'bg-gray-100 text-gray-800' : 'bg-yellow-100 text-yellow-800'}`}
+                                                >
+                                                    <option value="draft">Ноорог</option>
+                                                    <option value="published">Нийтлэгдсэн</option>
+                                                    <option value="archived">Архивлагдсан</option>
+                                                </select>
                                             </td>
                                             <td className="px-6 py-4 text-right space-x-3">
-                                                <button className="text-blue-600 hover:text-blue-900 font-medium text-xs transition-colors">Засах</button>
+                                                <Link href={`/admin/exams/edit/${exam.id}`}>
+                                                    <button className="text-blue-600 hover:text-blue-900 font-medium text-xs transition-colors">Засах</button>
+                                                </Link>
                                                 <button
                                                     onClick={() => handleDelete(exam.id)}
                                                     className="text-red-600 hover:text-red-900 font-medium text-xs transition-colors"

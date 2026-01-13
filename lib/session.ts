@@ -19,8 +19,12 @@ export async function getCurrentUser() {
             role: (decodedClaims.role || 'student') as UserRole,
             // Add other claims if needed
         };
-    } catch (error) {
-        console.error("Session verification failed", error);
+    } catch (error: any) {
+        if (error.code === 'auth/session-cookie-expired') {
+            console.log("Session expired - redirecting to login");
+        } else {
+            console.error("Session verification failed", error);
+        }
         return null;
     }
 }
@@ -29,7 +33,7 @@ export async function requireRole(allowedRoles: UserRole[]) {
     const user = await getCurrentUser();
 
     if (!user) {
-        redirect("/login");
+        redirect("/login?expired=1");
     }
 
     if (!allowedRoles.includes(user.role)) {

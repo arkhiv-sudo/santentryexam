@@ -1,21 +1,20 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { QuestionService } from "@/lib/services/question-service";
 import { Question, QuestionType, UserProfile } from "@/types";
-import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { Card, CardContent, CardHeader } from "@/components/ui/Card";
 import { toast } from "sonner";
-import { ChevronLeft, ChevronRight, Trash2, Search, Filter, Edit, Plus, Loader2 } from "lucide-react";
+import { Edit2, Trash2, Plus } from "lucide-react";
+import Link from "next/link";
 import { SettingsService } from "@/lib/services/settings-service";
 import { Grade, Subject } from "@/types";
 import MathRenderer from "@/components/exam/MathRenderer";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { DocumentData, QueryDocumentSnapshot } from "firebase/firestore";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 const PAGE_SIZE = 10;
 
@@ -25,7 +24,7 @@ const GRADES_MAP: Record<string, string> = {
     "9": "9-р анги", "10": "10-р анги", "11": "11-р анги", "12": "12-р анги"
 };
 
-export default function QuestionsPage() {
+export default function TeacherQuestionsPage() {
     const queryClient = useQueryClient();
     const [searchTerm, setSearchTerm] = useState("");
     const [typeFilter, setTypeFilter] = useState<QuestionType | "all">("all");
@@ -41,8 +40,6 @@ export default function QuestionsPage() {
         setCurrentPage(0);
         setLastVisibleDocs([]);
     }, [typeFilter, gradeFilter, subjectFilter, authorFilter]);
-
-    const router = useRouter();
 
     // Fetch Subjects with Caching
     const { data: subjectsData = [] } = useQuery({
@@ -70,7 +67,7 @@ export default function QuestionsPage() {
         isError,
         error
     } = useQuery({
-        queryKey: ["admin_questions", typeFilter, gradeFilter, subjectFilter, authorFilter, currentPage],
+        queryKey: ["questions", typeFilter, gradeFilter, subjectFilter, authorFilter, currentPage],
         queryFn: async () => {
             const lastDoc = currentPage === 0 ? undefined : lastVisibleDocs[currentPage - 1];
             return await QuestionService.getQuestionsPaginated(
@@ -115,7 +112,7 @@ export default function QuestionsPage() {
             const nextPage = currentPage + 1;
             const lastDoc = paginatedData?.lastVisible;
             queryClient.prefetchQuery({
-                queryKey: ["admin_questions", typeFilter, gradeFilter, subjectFilter, authorFilter, nextPage],
+                queryKey: ["questions", typeFilter, gradeFilter, subjectFilter, authorFilter, nextPage],
                 queryFn: () => QuestionService.getQuestionsPaginated(
                     PAGE_SIZE,
                     lastDoc || undefined,
@@ -150,27 +147,11 @@ export default function QuestionsPage() {
         }
     };
 
-    const [isMigrating, setIsMigrating] = useState(false);
-
-    const runMigration = async () => {
-        if (!confirm("Хуучин асуултуудад огноо нөхөж оруулах уу?")) return;
-        setIsMigrating(true);
-        try {
-            const count = await QuestionService.migrateLegacyQuestions();
-            toast.success(`${count} асуултыг шинэчиллээ.`);
-            queryClient.invalidateQueries({ queryKey: ["admin_questions"] });
-        } catch (error) {
-            toast.error("Migration failed");
-        } finally {
-            setIsMigrating(false);
-        }
-    };
-
     const handleDelete = async (id: string) => {
         if (!confirm("Та энэ асуултыг устгахдаа итгэлтэй байна уу?")) return;
         try {
             await QuestionService.deleteQuestion(id);
-            queryClient.invalidateQueries({ queryKey: ["admin_questions"] });
+            queryClient.invalidateQueries({ queryKey: ["questions"] });
             toast.success("Асуулт амжилттай устгагдлаа");
         } catch (error) {
             toast.error("Асуултыг устгахад алдаа гарлаа");
@@ -184,33 +165,20 @@ export default function QuestionsPage() {
 
     return (
         <div className="space-y-6">
-            <div className="bg-gradient-to-r from-slate-50 to-blue-50 p-8 rounded-2xl border border-blue-100 shadow-sm relative overflow-hidden mb-8">
-                <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                    <div>
-                        <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">
-                            Асуултын сан
-                        </h1>
-                        <p className="text-slate-500 mt-2 text-lg font-medium">Бүх шалгалтын асуултыг удирдах, зохион байгуулах</p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                        <Button
-                            variant="outline"
-                            onClick={runMigration}
-                            disabled={isMigrating}
-                            className="bg-white/50 backdrop-blur-sm border-blue-200 hover:bg-white text-blue-700 font-bold"
-                        >
-                            {isMigrating ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-                            Data Migration
-                        </Button>
-                        <Button onClick={() => router.push("/teacher/questions/create")} className="bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-lg shadow-blue-200">
-                            <Plus className="w-4 h-4 mr-2" /> Асуулт нэмэх
-                        </Button>
-                    </div>
+            <div className="flex justify-between items-center bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <div>
+                    <h1 className="text-2xl font-bold text-slate-900">Асуултын сан</h1>
+                    <p className="text-slate-500 text-sm">Таны үүсгэсэн болон ашиглах боломжтой асуултууд</p>
                 </div>
-                <div className="absolute right-0 top-0 w-64 h-64 bg-blue-100/50 rounded-full blur-3xl -mr-32 -mt-32"></div>
+                <Link href="/teacher/questions/create">
+                    <button className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-sm">
+                        <Plus className="w-5 h-5" />
+                        Асуулт нэмэх
+                    </button>
+                </Link>
             </div>
 
-            <Card className="bg-white shadow-xl border-0">
+            <Card className="border-slate-200">
                 <CardHeader>
                     <div className="flex flex-row items-center gap-2 w-full overflow-x-auto pb-2 sm:pb-0">
                         <div className="flex-1 min-w-[200px]">
@@ -266,37 +234,37 @@ export default function QuestionsPage() {
                     </div>
                 </CardHeader>
                 <CardContent>
-                    <div className="rounded-md border border-gray-100 overflow-hidden">
+                    <div className="rounded-xl border border-slate-200 overflow-hidden bg-white">
                         <table className="w-full text-sm text-left">
-                            <thead className="bg-gray-50 text-gray-900 font-semibold border-b border-gray-200">
+                            <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
                                 <tr>
-                                    <th className="px-4 py-3">Агуулга</th>
-                                    <th className="px-4 py-3 w-32">Төрөл</th>
-                                    <th className="px-4 py-3 w-32">Сэдэв</th>
-                                    <th className="px-4 py-3 w-24">Анги</th>
-                                    <th className="px-4 py-3 w-32 text-left">Багш</th>
-                                    <th className="px-4 py-3 w-32 text-left">Огноо</th>
-                                    <th className="px-4 py-3 w-20 text-center">Оноо</th>
-                                    <th className="px-4 py-3 w-24 text-right">Үйлдэл</th>
+                                    <th className="px-6 py-4">Агуулга</th>
+                                    <th className="px-6 py-4 w-32">Төрөл</th>
+                                    <th className="px-6 py-4 w-32">Сэдэв</th>
+                                    <th className="px-6 py-4 w-24">Анги</th>
+                                    <th className="px-6 py-4 w-32 text-left">Багш</th>
+                                    <th className="px-6 py-4 w-32 text-left">Огноо</th>
+                                    <th className="px-6 py-4 w-20 text-center">Оноо</th>
+                                    <th className="px-6 py-4 w-32 text-right">Үйлдэл</th>
                                 </tr>
                             </thead>
-                            <tbody className="divide-y divide-gray-100">
+                            <tbody className="divide-y divide-slate-100">
                                 {loading ? (
                                     <tr>
-                                        <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                                        <td colSpan={8} className="px-6 py-12 text-center text-slate-500">
                                             <div className="flex flex-col items-center gap-2">
-                                                <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                                                Асуултуудыг ачаалж байна...
+                                                <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                                                Ачаалж байна...
                                             </div>
                                         </td>
                                     </tr>
                                 ) : isError ? (
                                     <tr>
-                                        <td colSpan={8} className="px-4 py-8 text-center text-red-500">
+                                        <td colSpan={8} className="px-6 py-12 text-center text-red-500">
                                             <p className="font-bold">Алдаа гарлаа</p>
                                             <p className="text-sm opacity-80">{(error as any)?.message || "Өгөгдлийг татахад алдаа гарлаа"}</p>
                                             <button
-                                                onClick={() => queryClient.invalidateQueries({ queryKey: ["admin_questions"] })}
+                                                onClick={() => queryClient.invalidateQueries({ queryKey: ["questions"] })}
                                                 className="mt-4 text-xs bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded transition-all"
                                             >
                                                 Дахин оролдох
@@ -305,25 +273,31 @@ export default function QuestionsPage() {
                                     </tr>
                                 ) : displayQuestions.length === 0 ? (
                                     <tr>
-                                        <td colSpan={8} className="px-4 py-8 text-center text-gray-500 italic">Асуулт олдсонгүй.</td>
+                                        <td colSpan={8} className="px-6 py-12 text-center text-slate-500 italic">
+                                            Асуулт олдсонгүй.
+                                        </td>
                                     </tr>
                                 ) : (
                                     displayQuestions.map((q) => (
-                                        <tr key={q.id} className="hover:bg-gray-50/50 transition-colors">
-                                            <td className="px-4 py-3 font-medium text-gray-900">
-                                                <div className="line-clamp-2 max-h-12 overflow-hidden" title={q.content}>
+                                        <tr key={q.id} className="hover:bg-slate-50/50 transition-colors group">
+                                            <td className="px-6 py-4 font-medium text-slate-900">
+                                                <div className="line-clamp-2 leading-relaxed" title={q.content}>
                                                     <MathRenderer content={q.content} />
                                                 </div>
                                                 {q.mediaUrl && (
-                                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 mt-1">
+                                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-600 mt-2 uppercase tracking-wider">
                                                         Медиа: {q.mediaType}
                                                     </span>
                                                 )}
                                             </td>
-                                            <td className="px-4 py-3 text-gray-500">{typeLabels[q.type] || q.type}</td>
-                                            <td className="px-4 py-3 text-gray-500 truncate max-w-[120px]">{(q.subject && subjectsMap[q.subject]) || q.subject || "-"}</td>
-                                            <td className="px-4 py-3 text-gray-500">{(q.grade && GRADES_MAP[q.grade]) || q.grade || "-"}</td>
-                                            <td className="px-4 py-3 text-gray-500 italic text-xs">
+                                            <td className="px-6 py-4 text-slate-600">
+                                                <span className="bg-slate-100 px-2 py-1 rounded text-xs">
+                                                    {typeLabels[q.type] || q.type}
+                                                </span>
+                                            </td>
+                                            <td className="px-6 py-4 text-slate-600 truncate max-w-[120px]">{(q.subject && subjectsMap[q.subject]) || q.subject || "-"}</td>
+                                            <td className="px-6 py-4 text-slate-600">{(q.grade && GRADES_MAP[q.grade]) || q.grade || "-"}</td>
+                                            <td className="px-6 py-4 text-slate-600 italic text-xs">
                                                 {q.createdBy ? (
                                                     <span className="flex items-center gap-1">
                                                         <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
@@ -331,20 +305,23 @@ export default function QuestionsPage() {
                                                     </span>
                                                 ) : "-"}
                                             </td>
-                                            <td className="px-4 py-3 text-gray-500 text-xs tabular-nums">
+                                            <td className="px-6 py-4 text-slate-600 text-xs tabular-nums">
                                                 {q.createdAt ? new Date(q.createdAt).toLocaleDateString() : "-"}
                                             </td>
-                                            <td className="px-4 py-3 text-center text-gray-500">{q.points || 1}</td>
-                                            <td className="px-4 py-3 text-right">
-                                                <div className="flex justify-end gap-3 font-medium text-xs">
-                                                    <Link href={`/teacher/questions/edit/${q.id}`} className="text-blue-600 hover:text-blue-900">
-                                                        Засах
+                                            <td className="px-6 py-4 text-center font-bold text-slate-700">{q.points || 1}</td>
+                                            <td className="px-6 py-4 text-right">
+                                                <div className="flex justify-end gap-2">
+                                                    <Link href={`/teacher/questions/edit/${q.id}`}>
+                                                        <button className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all" title="Засах">
+                                                            <Edit2 className="w-4 h-4" />
+                                                        </button>
                                                     </Link>
                                                     <button
                                                         onClick={() => handleDelete(q.id)}
-                                                        className="text-red-600 hover:text-red-900 transition-colors"
+                                                        className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                                                        title="Устгах"
                                                     >
-                                                        Устгах
+                                                        <Trash2 className="w-4 h-4" />
                                                     </button>
                                                 </div>
                                             </td>
@@ -354,35 +331,30 @@ export default function QuestionsPage() {
                             </tbody>
                         </table>
                     </div>
-                    {(!loading || isFetching) && questions.length > 0 && (
-                        <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-gray-100 pt-6">
-                            <div className="flex items-center gap-3">
-                                <div className="text-[10px] font-bold text-slate-400 uppercase bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100">
-                                    Нийт {totalCount} асуултаас {currentPage * PAGE_SIZE + 1} - {Math.min((currentPage * PAGE_SIZE) + displayQuestions.length, totalCount)} хүртэл харуулж байна
-                                </div>
-                                {isFetching && (
-                                    <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                                )}
+                    {!loading && (
+                        <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-slate-100 pt-6">
+                            <div className="text-xs text-slate-500 font-medium bg-slate-50 px-3 py-1.5 rounded-full border border-slate-100">
+                                Нийт {totalCount} асуултаас {currentPage * PAGE_SIZE + 1} - {Math.min((currentPage * PAGE_SIZE) + displayQuestions.length, totalCount)} хүртэл харуулж байна
                             </div>
 
                             <div className="flex items-center gap-2">
                                 <button
                                     onClick={handlePrev}
                                     disabled={currentPage === 0 || isFetching}
-                                    className="flex items-center gap-1 px-4 py-2 border border-slate-200 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all uppercase"
+                                    className="flex items-center gap-1 px-4 py-2 border border-slate-200 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
                                 >
                                     <ChevronLeft className="w-4 h-4" />
                                     Өмнөх
                                 </button>
 
-                                <div className="flex items-center gap-1 px-4 py-2 bg-blue-50 border border-blue-100 rounded-lg text-xs font-bold text-blue-600">
+                                <div className="flex items-center gap-1 px-4 py-2 bg-blue-50 border border-blue-100 rounded-lg text-sm font-bold text-blue-600">
                                     {currentPage + 1}
                                 </div>
 
                                 <button
                                     onClick={handleNext}
                                     disabled={!hasNext || isFetching}
-                                    className="flex items-center gap-1 px-4 py-2 border border-slate-200 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all uppercase"
+                                    className="flex items-center gap-1 px-4 py-2 border border-slate-200 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
                                 >
                                     Дараагийн
                                     <ChevronRight className="w-4 h-4" />

@@ -20,6 +20,9 @@ export const metadata: Metadata = {
 
 import { Toaster } from "sonner";
 
+import QueryProvider from "@/components/QueryProvider";
+import { ScrollToTop } from "@/components/ScrollToTop";
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -30,10 +33,13 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <AuthProvider>
-          {children}
-          <Toaster position="top-right" richColors />
-        </AuthProvider>
+        <QueryProvider>
+          <AuthProvider>
+            {children}
+            <Toaster position="top-right" richColors closeButton />
+            <ScrollToTop />
+          </AuthProvider>
+        </QueryProvider>
       </body>
     </html>
   );
