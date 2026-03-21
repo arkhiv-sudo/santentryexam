@@ -411,16 +411,16 @@ export default function AdminSubjectsPage() {
                                     )}
                                 </div>
                                 <div className="flex gap-2">
-                                    <Select
+                                    <select
                                         value={filterLessonId}
                                         onChange={e => setFilterLessonId(e.target.value)}
-                                        className="text-xs w-36"
+                                        className="text-xs border border-slate-200 rounded-md px-2 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-300 min-w-[140px]"
                                     >
                                         <option value="all">Бүх хичээл</option>
                                         {lessons.map(l => (
                                             <option key={l.id} value={l.id}>{l.name}</option>
                                         ))}
-                                    </Select>
+                                    </select>
                                     <Select
                                         value={filterGradeId}
                                         onChange={e => setFilterGradeId(e.target.value)}

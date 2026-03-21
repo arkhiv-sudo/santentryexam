@@ -33,7 +33,8 @@ export const SettingsService = {
     },
 
     createLesson: async (name: string): Promise<string> => {
-        const docRef = await addDoc(collection(db, "lessons"), { name });
+        const normalized = name.trim().toLowerCase();
+        const docRef = await addDoc(collection(db, "lessons"), { name: normalized });
         SettingsService._lessonsCache = null; // invalidate cache
         return docRef.id;
     },
@@ -69,7 +70,7 @@ export const SettingsService = {
     },
 
     createSubject: async (name: string, gradeId?: string, lessonId?: string): Promise<string> => {
-        const data: Record<string, string> = { name };
+        const data: Record<string, string> = { name: name.trim().toLowerCase() };
         if (gradeId) data.gradeId = gradeId;
         if (lessonId) data.lessonId = lessonId;
         const docRef = await addDoc(collection(db, "subjects"), data);
@@ -85,7 +86,7 @@ export const SettingsService = {
             const batch = writeBatch(db);
             chunk.forEach(s => {
                 const newDocRef = doc(subjectsRef);
-                const data: Record<string, string> = { name: s.name, gradeId: s.gradeId };
+                const data: Record<string, string> = { name: s.name.trim().toLowerCase(), gradeId: s.gradeId };
                 if (s.lessonId) data.lessonId = s.lessonId;
                 batch.set(newDocRef, data);
             });
