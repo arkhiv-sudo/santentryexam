@@ -74,6 +74,12 @@ export async function GET(
         return NextResponse.json({ error: "Та энэ шалгалтыг аль хэдийн өгсөн байна" }, { status: 403 });
     }
 
+    // 5b. Late entry check: block if > 10 min have passed and student hasn't started yet
+    const LATE_ENTRY_LIMIT_MS = 10 * 60 * 1000; // 10 minutes
+    if (reg.status !== "started" && now > scheduledAt + LATE_ENTRY_LIMIT_MS) {
+        return NextResponse.json({ error: "Шалгалт эхэлснээс хойш 10 минут өнгөрсөн тул орох боломжгүй боллоо" }, { status: 403 });
+    }
+
     // 6. Fetch questions (from embedded snapshot or fallback to Firestore)
     const questionIds: string[] = exam.questionIds || [];
     if (questionIds.length === 0) {
