@@ -18,8 +18,8 @@ export const metadata: Metadata = {
   description: "Олон улсын шалгалтын нэгдсэн систем",
 };
 
+import { ModalProvider } from "@/components/providers/ModalProvider";
 import { Toaster } from "sonner";
-
 import QueryProvider from "@/components/QueryProvider";
 import { ScrollToTop } from "@/components/ScrollToTop";
 
@@ -35,9 +35,11 @@ export default function RootLayout({
       >
         <QueryProvider>
           <AuthProvider>
-            {children}
-            <Toaster position="top-right" richColors closeButton />
-            <ScrollToTop />
+            <ModalProvider>
+              {children}
+              <Toaster position="top-right" richColors closeButton />
+              <ScrollToTop />
+            </ModalProvider>
           </AuthProvider>
         </QueryProvider>
       </body>

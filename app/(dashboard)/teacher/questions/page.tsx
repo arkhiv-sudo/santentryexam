@@ -3,18 +3,23 @@
 import { useState, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { QuestionService } from "@/lib/services/question-service";
-import { Question, QuestionType, UserProfile } from "@/types";
+import { QuestionType } from "@/types";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Card, CardContent, CardHeader } from "@/components/ui/Card";
 import { toast } from "sonner";
-import { Edit2, Trash2, Plus } from "lucide-react";
+import { Edit2, Trash2, Plus, AlertCircle, X } from "lucide-react";
 import Link from "next/link";
 import { SettingsService } from "@/lib/services/settings-service";
-import { Grade, Subject } from "@/types";
+import { Subject } from "@/types";
 import MathRenderer from "@/components/exam/MathRenderer";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { DocumentData, QueryDocumentSnapshot } from "firebase/firestore";
+import { useConfirm } from "@/components/providers/ModalProvider";
+import { addDoc, collection, serverTimestamp } from "firebase/firestore";
+import { db } from "@/lib/firebase";
+import { useAuth } from "@/components/AuthProvider";
+import { Question } from "@/types";
 
 const PAGE_SIZE = 10;
 
@@ -26,13 +31,18 @@ const GRADES_MAP: Record<string, string> = {
 
 export default function TeacherQuestionsPage() {
     const queryClient = useQueryClient();
+    const confirm = useConfirm();
+    const { profile } = useAuth();
+    const [correctionQuestion, setCorrectionQuestion] = useState<Question | null>(null);
+    const [correctionNote, setCorrectionNote] = useState("");
+    const [submittingCorrection, setSubmittingCorrection] = useState(false);
     const [searchTerm, setSearchTerm] = useState("");
     const [typeFilter, setTypeFilter] = useState<QuestionType | "all">("all");
     const [gradeFilter, setGradeFilter] = useState<string | "all">("all");
     const [subjectFilter, setSubjectFilter] = useState<string | "all">("all");
     const [authorFilter, setAuthorFilter] = useState<string | "all">("all");
     const [currentPage, setCurrentPage] = useState(0);
-    const [lastVisibleDocs, setLastVisibleDocs] = useState<(QueryDocumentSnapshot<DocumentData> | null)[]>([]);
+    const [lastVisibleDocs] = useState<(QueryDocumentSnapshot<DocumentData> | null)[]>([]);
 
     // Fetch Authors with Caching (1 hour stable)
     const { data: authors = [] } = useQuery({
@@ -43,8 +53,8 @@ export default function TeacherQuestionsPage() {
 
     // Reset pagination when filter changes
     useEffect(() => {
-        setCurrentPage(0);
-        setLastVisibleDocs([]);
+        // setCurrentPage(0);
+        // setLastVisibleDocs([]);
     }, [typeFilter, gradeFilter, subjectFilter, authorFilter]);
 
     // Fetch Subjects with Caching (1 hour stable)
@@ -56,13 +66,13 @@ export default function TeacherQuestionsPage() {
 
     const subjectsMap = useMemo(() => {
         const sMap: Record<string, string> = {};
-        subjectsData.forEach(s => sMap[s.id] = s.name);
+        subjectsData.forEach((s: Subject) => sMap[s.id] = s.name);
         return sMap;
     }, [subjectsData]);
 
     const filteredSubjects = useMemo(() => {
         if (gradeFilter === "all") return subjectsData;
-        return subjectsData.filter(s => !s.gradeId || s.gradeId === gradeFilter);
+        return subjectsData.filter((s: Subject) => !s.gradeId || s.gradeId === gradeFilter);
     }, [subjectsData, gradeFilter]);
 
     // Fetch Questions with Pagination & Caching
@@ -91,6 +101,7 @@ export default function TeacherQuestionsPage() {
 
     // Update pagination markers when data changes
     useEffect(() => {
+        /*
         if (paginatedData?.lastVisible) {
             setLastVisibleDocs(prev => {
                 if (prev[currentPage] === paginatedData.lastVisible) return prev;
@@ -99,9 +110,10 @@ export default function TeacherQuestionsPage() {
                 return next;
             });
         }
+        */
     }, [paginatedData?.lastVisible, currentPage]);
 
-    const questions = paginatedData?.questions || [];
+
     const totalCount = paginatedData?.totalCount || 0;
     const hasNext = !!paginatedData?.lastVisible && (currentPage + 1) * PAGE_SIZE < totalCount;
 
@@ -125,14 +137,15 @@ export default function TeacherQuestionsPage() {
     }, [hasNext, currentPage, paginatedData?.lastVisible, queryClient, typeFilter, gradeFilter, subjectFilter, authorFilter]);
 
     const displayQuestions = useMemo(() => {
-        if (!searchTerm) return questions;
+        const currentQuestions = paginatedData?.questions || [];
+        if (!searchTerm) return currentQuestions;
 
         const lowerTerm = searchTerm.toLowerCase();
-        return questions.filter(q =>
+        return currentQuestions.filter(q =>
             q.content.toLowerCase().includes(lowerTerm) ||
             (q.subject && subjectsMap[q.subject]?.toLowerCase().includes(lowerTerm))
         );
-    }, [searchTerm, questions, subjectsMap]);
+    }, [searchTerm, paginatedData?.questions, subjectsMap]);
 
     const handleNext = () => {
         if (hasNext) {
@@ -147,23 +160,99 @@ export default function TeacherQuestionsPage() {
     };
 
     const handleDelete = async (id: string) => {
-        if (!confirm("Та энэ асуултыг устгахдаа итгэлтэй байна уу?")) return;
+        const confirmed = await confirm({
+            title: "Устгахыг баталгаажуулах",
+            message: "Та энэ асуултыг устгахдаа итгэлтэй байна уу?",
+            confirmLabel: "Устгах",
+            variant: "destructive"
+        });
+
+        if (!confirmed) return;
         try {
             await QuestionService.deleteQuestion(id);
             queryClient.invalidateQueries({ queryKey: ["questions"] });
             toast.success("Асуулт амжилттай устгагдлаа");
-        } catch (error) {
+        } catch {
             toast.error("Асуултыг устгахад алдаа гарлаа");
+        }
+    };
+
+    const handleSubmitCorrection = async () => {
+        if (!correctionQuestion || !correctionNote.trim() || !profile) return;
+        setSubmittingCorrection(true);
+        try {
+            await addDoc(collection(db, "corrections"), {
+                questionId: correctionQuestion.id,
+                questionContent: correctionQuestion.content,
+                submittedBy: profile.uid,
+                submittedByName: `${profile.lastName} ${profile.firstName}`.trim(),
+                note: correctionNote.trim(),
+                status: "pending",
+                createdAt: serverTimestamp(),
+            });
+            toast.success("Засах санал амжилттай илгээгдлээ!");
+            setCorrectionQuestion(null);
+            setCorrectionNote("");
+        } catch {
+            toast.error("Илгээхэд алдаа гарлаа");
+        } finally {
+            setSubmittingCorrection(false);
         }
     };
 
     const typeLabels: Record<QuestionType, string> = {
         multiple_choice: "Сонгох",
+        fill_in_blank: "Нөхөх",
         input: "Хариулах"
     };
 
     return (
         <div className="space-y-6">
+            {/* Correction Modal */}
+            {correctionQuestion && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => { setCorrectionQuestion(null); setCorrectionNote(""); }} />
+                    <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-lg p-8 space-y-6 animate-in zoom-in-95 duration-200">
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <h3 className="text-xl font-black text-slate-900">Засах санал илгээх</h3>
+                                <p className="text-sm text-slate-500 mt-1">Асуултын алдааг тайлбарлаж, засах саналаа бичнэ үү.</p>
+                            </div>
+                            <button onClick={() => { setCorrectionQuestion(null); setCorrectionNote(""); }} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-all">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 text-sm text-slate-700 font-medium line-clamp-3">
+                            {correctionQuestion.content}
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-bold text-slate-700">Алдааны тайлбар / Санал</label>
+                            <textarea
+                                className="w-full border-2 border-slate-200 rounded-2xl p-4 text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-50 transition-all resize-none"
+                                rows={4}
+                                placeholder="Жишээ: Хариулт буруу байна, зөв хариулт нь... / Асуулт тодорхойгүй байна..."
+                                value={correctionNote}
+                                onChange={e => setCorrectionNote(e.target.value)}
+                            />
+                        </div>
+                        <div className="flex gap-3">
+                            <button
+                                onClick={() => { setCorrectionQuestion(null); setCorrectionNote(""); }}
+                                className="flex-1 py-3 border-2 border-slate-200 rounded-2xl font-bold text-slate-600 hover:bg-slate-50 transition-all"
+                            >
+                                Цуцлах
+                            </button>
+                            <button
+                                onClick={handleSubmitCorrection}
+                                disabled={!correctionNote.trim() || submittingCorrection}
+                                className="flex-1 py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-2xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {submittingCorrection ? "Илгээж байна..." : "Санал илгээх"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             <div className="flex justify-between items-center bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
                 <div>
                     <h1 className="text-2xl font-bold text-slate-900">Асуултын сан</h1>
@@ -213,7 +302,7 @@ export default function TeacherQuestionsPage() {
                         </Select>
                         <Select
                             value={typeFilter}
-                            onChange={(e) => setTypeFilter(e.target.value as any)}
+                            onChange={(e) => setTypeFilter(e.target.value as QuestionType | "all")}
                             className="w-32 h-9 text-sm"
                         >
                             <option value="all">Бүх төрөл</option>
@@ -261,7 +350,7 @@ export default function TeacherQuestionsPage() {
                                     <tr>
                                         <td colSpan={8} className="px-6 py-12 text-center text-red-500">
                                             <p className="font-bold">Алдаа гарлаа</p>
-                                            <p className="text-sm opacity-80">{(error as any)?.message || "Өгөгдлийг татахад алдаа гарлаа"}</p>
+                                            <p className="text-sm opacity-80">{(error as Error)?.message || "Өгөгдлийг татахад алдаа гарлаа"}</p>
                                             <button
                                                 onClick={() => queryClient.invalidateQueries({ queryKey: ["questions"] })}
                                                 className="mt-4 text-xs bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded transition-all"
@@ -315,6 +404,13 @@ export default function TeacherQuestionsPage() {
                                                             <Edit2 className="w-4 h-4" />
                                                         </button>
                                                     </Link>
+                                                    <button
+                                                        onClick={() => { setCorrectionQuestion(q); setCorrectionNote(""); }}
+                                                        className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-all"
+                                                        title="Засах санал илгээх"
+                                                    >
+                                                        <AlertCircle className="w-4 h-4" />
+                                                    </button>
                                                     <button
                                                         onClick={() => handleDelete(q.id)}
                                                         className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"

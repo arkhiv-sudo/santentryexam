@@ -3,7 +3,6 @@ import {
     collection,
     getDocs,
     addDoc,
-    updateDoc,
     deleteDoc,
     doc,
     query,
@@ -11,7 +10,7 @@ import {
     where,
     writeBatch
 } from "firebase/firestore";
-import { Grade, Subject } from "@/types";
+import { Grade, Subject, Lesson } from "@/types";
 
 export const SettingsService = {
     // Grade management (Hardcoded 1-12)
@@ -21,6 +20,27 @@ export const SettingsService = {
             name: `${i + 1}-р анги`,
             order: i + 1
         }));
+    },
+
+    // Lesson management (Хичээл)
+    _lessonsCache: null as Lesson[] | null,
+    getLessons: async (): Promise<Lesson[]> => {
+        if (SettingsService._lessonsCache) return SettingsService._lessonsCache;
+        const snapshot = await getDocs(query(collection(db, "lessons"), orderBy("name", "asc")));
+        const lessons = snapshot.docs.map(d => ({ id: d.id, name: d.data().name } as Lesson));
+        SettingsService._lessonsCache = lessons;
+        return lessons;
+    },
+
+    createLesson: async (name: string): Promise<string> => {
+        const docRef = await addDoc(collection(db, "lessons"), { name });
+        SettingsService._lessonsCache = null; // invalidate cache
+        return docRef.id;
+    },
+
+    deleteLesson: async (id: string): Promise<void> => {
+        await deleteDoc(doc(db, "lessons", id));
+        SettingsService._lessonsCache = null;
     },
 
     // Subject management
@@ -48,23 +68,41 @@ export const SettingsService = {
         }
     },
 
-    createSubject: async (name: string, gradeId?: string): Promise<string> => {
-        const data: any = { name };
+    createSubject: async (name: string, gradeId?: string, lessonId?: string): Promise<string> => {
+        const data: Record<string, string> = { name };
         if (gradeId) data.gradeId = gradeId;
+        if (lessonId) data.lessonId = lessonId;
         const docRef = await addDoc(collection(db, "subjects"), data);
+        SettingsService._subjectsCache = null; // invalidate cache
         return docRef.id;
     },
 
-    createSubjectsBatch: async (subjects: { name: string, gradeId: string }[]): Promise<void> => {
-        const batch = writeBatch(db);
+    createSubjectsBatch: async (subjects: { name: string, gradeId: string, lessonId?: string }[]): Promise<void> => {
+        SettingsService._subjectsCache = null;
         const subjectsRef = collection(db, "subjects");
+        for (let i = 0; i < subjects.length; i += 500) {
+            const chunk = subjects.slice(i, i + 500);
+            const batch = writeBatch(db);
+            chunk.forEach(s => {
+                const newDocRef = doc(subjectsRef);
+                const data: Record<string, string> = { name: s.name, gradeId: s.gradeId };
+                if (s.lessonId) data.lessonId = s.lessonId;
+                batch.set(newDocRef, data);
+            });
+            await batch.commit();
+        }
+    },
 
-        subjects.forEach(s => {
-            const newDocRef = doc(subjectsRef);
-            batch.set(newDocRef, { name: s.name, gradeId: s.gradeId });
-        });
-
-        await batch.commit();
+    deleteSubjectsBatch: async (ids: string[]): Promise<void> => {
+        for (let i = 0; i < ids.length; i += 500) {
+            const chunk = ids.slice(i, i + 500);
+            const batch = writeBatch(db);
+            chunk.forEach(id => {
+                const docRef = doc(db, "subjects", id);
+                batch.delete(docRef);
+            });
+            await batch.commit();
+        }
     },
 
     deleteSubject: async (id: string): Promise<void> => {

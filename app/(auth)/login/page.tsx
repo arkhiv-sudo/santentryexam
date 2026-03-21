@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider } from "firebase/auth";
+import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
@@ -9,9 +9,8 @@ import { Input } from "@/components/ui/Input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card";
 import Link from "next/link";
 import { toast } from "sonner";
-import { doc, getDoc, setDoc, serverTimestamp, query, collection, where, getDocs } from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import { UserProfile } from "@/types";
 
 export default function LoginPage() {
     const [email, setEmail] = useState("");
@@ -20,51 +19,32 @@ export default function LoginPage() {
     const [loading, setLoading] = useState(false);
     const router = useRouter();
 
-    const processLogin = async (user: any) => {
-        // 1. Check if user document exists
-        const userDoc = await getDoc(doc(db, "users", user.uid));
-        let role = 'student';
+    const processLogin = async (user: { uid: string; getIdToken: () => Promise<string> }) => {
+        try {
+            const userDoc = await getDoc(doc(db, "users", user.uid));
+            let role = "student";
+            if (userDoc.exists()) {
+                role = userDoc.data().role;
+            }
 
-        if (!userDoc.exists()) {
-            // New user (likely via Google)
-            role = 'parent';
-            const profile: UserProfile = {
-                uid: user.uid,
-                email: user.email!,
-                firstName: user.displayName?.split(' ').pop() || '',
-                lastName: user.displayName?.split(' ').slice(0, -1).join(' ') || '',
-                role: 'parent',
-                // @ts-ignore
-                createdAt: serverTimestamp(),
-            };
+            const idToken = await user.getIdToken();
+            const res = await fetch("/api/auth/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ idToken }),
+            });
 
-            // Auto-link to any students already using this email as parentEmail
-            const studentQuery = query(collection(db, "users"), where("parentEmail", "==", user.email), where("role", "==", "student"));
-            const studentSnapshot = await getDocs(studentQuery);
-            const childrenIds = studentSnapshot.docs.map(d => d.id);
-            profile.children = childrenIds;
+            if (!res.ok) {
+                throw new Error("network_error");
+            }
 
-            await setDoc(doc(db, "users", user.uid), profile);
-            toast.info("Шинэ бүртгэл үүслээ (Эцэг эх).");
-        } else {
-            role = userDoc.data().role;
+            if (role === "admin") router.push("/admin");
+            else if (role === "teacher") router.push("/teacher");
+            else if (role === "parent") router.push("/parent");
+            else router.push("/student");
+        } catch (error) {
+            throw error; // Let the caller handle it
         }
-
-        // 2. Get ID Token
-        const idToken = await user.getIdToken();
-
-        // 3. Create Server Session
-        await fetch("/api/auth/login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ idToken }),
-        });
-
-        // 4. Redirect
-        if (role === 'admin') router.push('/admin');
-        else if (role === 'teacher') router.push('/teacher');
-        else if (role === 'parent') router.push('/parent');
-        else router.push('/student');
     };
 
     const handleEmailLogin = async (e: React.FormEvent) => {
@@ -73,93 +53,72 @@ export default function LoginPage() {
         setError("");
 
         try {
-            let loginEmail = email;
-            // If it's a student code (6 chars, no @)
-            if (!email.includes("@")) {
-                loginEmail = `${email.toUpperCase().trim()}@student.internal`;
+            let loginEmail = email.trim();
+            // Student code login: no @ → append @student.internal
+            if (!loginEmail.includes("@")) {
+                loginEmail = `${loginEmail.toUpperCase()}@student.internal`;
             }
 
             const userCredential = await signInWithEmailAndPassword(auth, loginEmail, password);
             await processLogin(userCredential.user);
             toast.success("Амжилттай нэвтэрлээ!");
-        } catch (err: any) {
-            const message = "Имэйл/Код эсвэл нууц үг буруу байна";
+        } catch (e: unknown) {
+            const err = e as { code?: string; message?: string };
+            let message = "Имэйл/Код эсвэл нууц үг буруу байна";
+            
+            if (err?.code === "auth/network-request-failed" || err?.message === "network_error") {
+                message = "Интернэт холболт тасарсан эсвэл сервертэй холбогдож чадсангүй.";
+            } else if (err?.code === "auth/too-many-requests") {
+                message = "Хэт олон удаа буруу оролдлоо. Түр хүлээгээд дахин оролдоно уу.";
+            } else if (err?.code === "auth/invalid-credential") {
+                 message = "Нэвтрэх мэдээлэл буруу байна.";
+            }
+
             setError(message);
             toast.error(message);
             console.error(err);
-            setLoading(false);
-        }
-    };
-
-    const handleGoogleLogin = async () => {
-        setLoading(true);
-        setError("");
-        try {
-            const provider = new GoogleAuthProvider();
-            const result = await signInWithPopup(auth, provider);
-            await processLogin(result.user);
-            toast.success("Google-ээр амжилттай нэвтэрлээ!");
-        } catch (err: any) {
-            console.error(err);
-            toast.error("Google-ээр нэвтрэхэд алдаа гарлаа.");
-            setError("Google-ээр нэвтрэхэд алдаа гарлаа.");
+        } finally {
             setLoading(false);
         }
     };
 
     return (
-        <Card className="w-full shadow-lg border-slate-200 bg-white overflow-hidden transition-all hover:shadow-xl">
-            <CardHeader className="space-y-1 text-center bg-slate-50/50 border-b border-slate-100 py-8">
-                <CardTitle className="text-3xl font-bold tracking-tight text-slate-900">Тавтай морилно уу</CardTitle>
-                <CardDescription className="text-slate-500 text-base">
+        <div className="w-full max-w-md mx-auto">
+            <Card className="w-full shadow-lg border-slate-200 bg-white overflow-hidden transition-all hover:shadow-xl">
+                <CardHeader className="space-y-1 text-center bg-slate-50/50 border-b border-slate-100 py-6">
+                <CardTitle className="text-2xl font-bold tracking-tight text-slate-900">Тавтай морилно уу</CardTitle>
+                <CardDescription className="text-slate-500 text-sm">
                     Өөрийн мэдээллээ оруулж нэвтэрнэ үү
                 </CardDescription>
             </CardHeader>
-            <CardContent className="grid gap-6 p-8">
-                <Button
-                    variant="outline"
-                    type="button"
-                    onClick={handleGoogleLogin}
-                    disabled={loading}
-                    className="w-full py-6 text-base font-medium transition-all hover:bg-slate-50 border-slate-200 flex items-center justify-center gap-3"
-                >
-                    <svg className="h-5 w-5" aria-hidden="true" focusable="false" data-prefix="fab" data-icon="google" role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 488 512">
-                        <path fill="currentColor" d="M488 261.8C488 403.3 391.1 504 248 504 110.8 504 0 393.2 0 256S110.8 8 248 8c66.8 0 123 24.5 166.3 64.9l-67.5 64.9C258.5 52.6 94.3 116.6 94.3 256c0 86.5 69.1 156.6 153.7 156.6 98.2 0 135-70.4 140.8-106.9H248v-85.3h236.1c2.3 12.7 3.9 24.9 3.9 41.4z"></path>
-                    </svg>
-                    Google-ээр үргэлжлүүлэх
-                </Button>
-
-                <div className="relative">
-                    <div className="absolute inset-0 flex items-center">
-                        <span className="w-full border-t border-slate-100" />
-                    </div>
-                    <div className="relative flex justify-center text-xs uppercase">
-                        <span className="bg-white px-4 text-slate-400 font-medium">Эсвэл имэйлээр нэвтрэх</span>
-                    </div>
-                </div>
-
+            <CardContent className="grid gap-5 p-6">
                 <form onSubmit={handleEmailLogin} className="space-y-5">
                     <div className="space-y-2">
-                        <label className="text-sm font-semibold leading-none text-slate-700 ml-1">Имэйл эсвэл Сурагчийн код</label>
+                        <label className="text-sm font-semibold leading-none text-slate-700 ml-1">
+                            Имэйл эсвэл Сурагчийн код
+                        </label>
                         <Input
                             type="text"
-                            placeholder="name@example.com эсвэл 6 оронтой код"
+                            placeholder="name@example.com эсвэл сурагчийн код"
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             required
-                            className="h-12 border-slate-200 focus:border-blue-500 focus:ring-4 focus:ring-blue-50 transition-all rounded-lg"
+                            className="h-11 border-slate-200 focus:border-blue-500 focus:ring-4 focus:ring-blue-50 transition-all rounded-lg text-sm"
                         />
                     </div>
                     <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                            <label className="text-sm font-semibold leading-none text-slate-700 ml-1">Нууц үг</label>
+                        <div className="flex items-center justify-between ml-1">
+                            <label className="text-sm font-semibold leading-none text-slate-700">Нууц үг</label>
+                            <Link href="/forgot-password" className="text-sm font-bold text-blue-600 hover:text-blue-700 hover:underline transition-colors">
+                                Нууц үгээ мартсан уу?
+                            </Link>
                         </div>
                         <Input
                             type="password"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             required
-                            className="h-12 border-slate-200 focus:border-blue-500 focus:ring-4 focus:ring-blue-50 transition-all rounded-lg"
+                            className="h-11 border-slate-200 focus:border-blue-500 focus:ring-4 focus:ring-blue-50 transition-all rounded-lg text-sm"
                         />
                     </div>
                     {error && (
@@ -167,7 +126,11 @@ export default function LoginPage() {
                             {error}
                         </div>
                     )}
-                    <Button type="submit" className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white font-bold text-lg transition-all shadow-md active:scale-[0.98] rounded-xl mt-2" disabled={loading}>
+                    <Button
+                        type="submit"
+                        className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-base rounded-lg transition-all"
+                        disabled={loading}
+                    >
                         {loading ? "Нэвтэрч байна..." : "Нэвтрэх"}
                     </Button>
                 </form>
@@ -179,5 +142,6 @@ export default function LoginPage() {
                 </Link>
             </div>
         </Card>
+        </div>
     );
 }

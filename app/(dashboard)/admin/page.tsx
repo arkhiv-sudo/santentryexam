@@ -2,15 +2,12 @@
 
 import { useAuth } from "@/components/AuthProvider";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
 import { useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Users, FileQuestion, ClipboardList, Settings, Award, BookOpen, RefreshCw } from "lucide-react";
-import { db, functions } from "@/lib/firebase";
+import { Users, FileQuestion, ClipboardList, Settings, Award, BookOpen, ShieldCheck } from "lucide-react";
+import { db } from "@/lib/firebase";
 import { doc, onSnapshot } from "firebase/firestore";
-import { httpsCallable } from "firebase/functions";
-import { toast } from "sonner";
 
 const STATS_CACHE_KEY = "admin_stats_cache";
 
@@ -111,13 +108,16 @@ export default function AdminDashboard() {
     ];
 
     return (
-        <div className="space-y-8">
-            {/* Subtle Header */}
-            <div className="relative overflow-hidden rounded-xl bg-gradient-to-r from-slate-50 to-blue-50 p-8 border border-slate-200">
-                <div className="relative z-10">
+        <div className="space-y-5">
+            {/* Compact Header */}
+            <div className="relative overflow-hidden rounded-xl bg-linear-to-r from-slate-800 to-slate-900 px-6 py-5 border border-slate-700 shadow-sm text-white">
+                <div className="relative z-10 flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-lg bg-white/10 flex items-center justify-center shrink-0 border border-white/5">
+                        <ShieldCheck className="w-5 h-5 text-white" />
+                    </div>
                     <div>
-                        <h1 className="text-4xl font-bold tracking-tight text-slate-900 mb-2">Админы хянах самбар</h1>
-                        <p className="text-slate-600 text-lg">
+                        <h1 className="text-xl font-bold tracking-tight mb-0.5">Админы хянах самбар</h1>
+                        <p className="text-slate-400 text-xs font-medium">
                             Тавтай морил, {profile?.lastName} {profile?.firstName}
                         </p>
                     </div>
@@ -125,24 +125,20 @@ export default function AdminDashboard() {
             </div>
 
             {/* Stats Cards */}
-            <div className="grid gap-6 md:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-3">
                 {statsCards.map((stat, idx) => {
                     const Icon = stat.icon;
                     return (
-                        <Card key={idx} className="border-0 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1">
-                            <CardContent className="p-6">
-                                <div className="flex items-center justify-between">
-                                    <div>
-                                        <p className="text-sm font-medium text-slate-600 mb-1">{stat.label}</p>
-                                        <div className="flex items-baseline gap-2">
-                                            <p className="text-3xl font-bold text-slate-900">
-                                                {loadingStats ? "..." : stat.value}
-                                            </p>
-                                        </div>
-                                    </div>
-                                    <div className={`${stat.bg} p-4 rounded-2xl`}>
-                                        <Icon className={`w-8 h-8 ${stat.color}`} />
-                                    </div>
+                        <Card key={idx} className="border border-slate-200 shadow-sm hover:shadow-md transition-all duration-200">
+                            <CardContent className="p-4 flex items-center gap-4">
+                                <div className={`${stat.bg} w-12 h-12 rounded-xl flex items-center justify-center shrink-0`}>
+                                    <Icon className={`w-6 h-6 ${stat.color}`} />
+                                </div>
+                                <div>
+                                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-0.5">{stat.label}</p>
+                                    <p className="text-2xl font-black text-slate-900">
+                                        {loadingStats ? "..." : stat.value}
+                                    </p>
                                 </div>
                             </CardContent>
                         </Card>
@@ -151,34 +147,33 @@ export default function AdminDashboard() {
             </div>
 
             {/* Main Navigation Cards */}
-            <div>
-                <h2 className="text-2xl font-bold text-slate-900 mb-6">Удирдлагын хэсгүүд</h2>
-                <div className="grid gap-6 md:grid-cols-2">
+            <div className="space-y-4">
+                <h2 className="text-sm flex items-center gap-2 font-bold text-slate-800 uppercase tracking-wider">
+                    <div className="w-1.5 h-4 bg-slate-800 rounded-full" />
+                    Удирдлагын хэсгүүд
+                </h2>
+                <div className="grid gap-4 md:grid-cols-2">
                     {adminCards.map((card) => {
                         const Icon = card.icon;
                         return (
                             <Link key={card.href} href={card.href} className="group block h-full">
-                                <Card className="relative h-full border-0 shadow-lg group-hover:shadow-2xl transition-all duration-300 cursor-pointer overflow-hidden group-hover:-translate-y-2">
-                                    <div className={`absolute inset-0 bg-gradient-to-br ${card.gradient} opacity-0 group-hover:opacity-5 transition-opacity duration-300`}></div>
-                                    <CardHeader className="relative">
-                                        <div className={`w-14 h-14 rounded-2xl ${card.iconBg} flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300`}>
-                                            <Icon className={`w-7 h-7 ${card.iconColor}`} />
+                                <Card className="relative h-full border border-slate-200 shadow-sm group-hover:border-slate-300 group-hover:shadow-md transition-all duration-200 cursor-pointer overflow-hidden">
+                                    <div className={`absolute inset-0 bg-linear-to-br ${card.gradient} opacity-0 group-hover:opacity-[0.03] transition-opacity duration-300`}></div>
+                                    <CardHeader className="relative p-5">
+                                        <div className="flex items-center gap-3">
+                                            <div className={`${card.iconBg} w-10 h-10 rounded-lg flex items-center justify-center shrink-0`}>
+                                                <Icon className={`w-5 h-5 ${card.iconColor}`} />
+                                            </div>
+                                            <div>
+                                                <CardTitle className="text-base font-bold text-slate-900 group-hover:text-blue-600 transition-colors">
+                                                    {card.title}
+                                                </CardTitle>
+                                                <CardDescription className="text-xs text-slate-500 mt-0.5">
+                                                    {card.description}
+                                                </CardDescription>
+                                            </div>
                                         </div>
-                                        <CardTitle className="text-2xl group-hover:text-transparent group-hover:bg-clip-text group-hover:bg-gradient-to-r group-hover:from-blue-600 group-hover:to-purple-600 transition-all duration-300">
-                                            {card.title}
-                                        </CardTitle>
-                                        <CardDescription className="text-base text-slate-600 mt-2">
-                                            {card.description}
-                                        </CardDescription>
                                     </CardHeader>
-                                    <CardContent>
-                                        <div className="flex items-center text-sm font-medium text-blue-600 group-hover:text-purple-600 transition-colors">
-                                            Нээх
-                                            <svg className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                                            </svg>
-                                        </div>
-                                    </CardContent>
                                 </Card>
                             </Link>
                         );

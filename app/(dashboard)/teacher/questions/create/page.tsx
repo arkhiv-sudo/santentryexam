@@ -2,9 +2,9 @@
 
 import { QuestionForm } from "@/components/QuestionForm";
 import { QuestionService } from "@/lib/services/question-service";
-import { Question, Subject } from "@/types";
+import { Question } from "@/types";
 import { useRouter } from "next/navigation";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/components/AuthProvider";
 import { BulkQuestionUpload } from "@/components/BulkQuestionUpload";
@@ -24,6 +24,12 @@ export default function CreateQuestionPage() {
         queryKey: ["subjects_list"],
         queryFn: () => SettingsService.getSubjects(),
         staleTime: 60 * 60 * 1000, // 1 hour
+    });
+
+    const { data: allLessons = [] } = useQuery({
+        queryKey: ["lessons_list"],
+        queryFn: () => SettingsService.getLessons(),
+        staleTime: 60 * 60 * 1000,
     });
 
     const handleSubmit = async (data: Omit<Question, "id">) => {
@@ -100,6 +106,7 @@ export default function CreateQuestionPage() {
             ) : (
                 <BulkQuestionUpload
                     allSubjects={allSubjects}
+                    allLessons={allLessons}
                     onComplete={() => {
                         queryClient.invalidateQueries({ queryKey: ["questions"] });
                         queryClient.invalidateQueries({ queryKey: ["admin_questions"] });

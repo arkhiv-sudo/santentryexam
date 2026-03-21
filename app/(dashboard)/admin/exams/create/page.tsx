@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ExamService } from "@/lib/services/exam-service";
+import { QuestionService } from "@/lib/services/question-service";
 import { SettingsService } from "@/lib/services/settings-service";
 import { useAuth } from "@/components/AuthProvider";
 import { Button } from "@/components/ui/Button";
@@ -13,6 +14,7 @@ import { toast } from "sonner";
 import { ArrowLeft, Save, Calendar, Clock, GraduationCap, ListOrdered, ChevronRight, ChevronLeft, BookOpen } from "lucide-react";
 import Link from "next/link";
 import { Exam, Subject } from "@/types";
+import { useQuery } from "@tanstack/react-query";
 
 const GRADES_MAP: Record<string, string> = {
     "1": "1-р анги", "2": "2-р анги", "3": "3-р анги", "4": "4-р анги",
@@ -29,6 +31,13 @@ export default function CreateExamPage() {
     const [subjects, setSubjects] = useState<Subject[]>([]);
     const [loadingSubjects, setLoadingSubjects] = useState(false);
 
+    const { data: lessonsData = [] } = useQuery({
+        queryKey: ["lessons"],
+        queryFn: () => SettingsService.getLessons(),
+        staleTime: 30 * 60 * 1000,
+    });
+    const lessonsMap = Object.fromEntries(lessonsData.map((l: { id: string; name: string }) => [l.id, l.name]));
+
     const [formData, setFormData] = useState({
         title: "",
         scheduledAt: "",
@@ -36,10 +45,12 @@ export default function CreateExamPage() {
         duration: "60",
         grade: "",
         maxQuestions: "30",
+        passingScore: "60",
         status: "draft" as Exam["status"]
     });
 
     const [distribution, setDistribution] = useState<Record<string, number>>({});
+    const [availableCounts, setAvailableCounts] = useState<Record<string, number>>({});
 
     useEffect(() => {
         if (!authLoading && profile?.role !== "admin") {
@@ -56,8 +67,8 @@ export default function CreateExamPage() {
         const scheduledDate = new Date(formData.scheduledAt);
         const regEndDate = new Date(formData.registrationEndDate);
 
-        if (regEndDate > scheduledDate) {
-            toast.error("Бүртгэл дуусах огноо шалгалт эхлэх огнооноос хойш байж болохгүй");
+        if (regEndDate >= scheduledDate) {
+            toast.error("Бүртгэл дуусах огноо шалгалт эхлэх огнооноос өмнө байх ёстой");
             return;
         }
 
@@ -65,6 +76,11 @@ export default function CreateExamPage() {
         try {
             const data = await SettingsService.getSubjects(formData.grade);
             setSubjects(data);
+
+            // Fetch question counts for these subjects
+            const subjectIds = data.map(s => s.id);
+            const counts = await QuestionService.getQuestionCounts(formData.grade, subjectIds);
+            setAvailableCounts(counts);
 
             // Initialize distribution with 0s if not already set
             const newDist: Record<string, number> = { ...distribution };
@@ -75,7 +91,8 @@ export default function CreateExamPage() {
 
             setStep(2);
         } catch (error) {
-            toast.error("Сэдвүүдийг ачаалахад алдаа гарлаа");
+            console.error("Failed to load step 2 data:", error);
+            toast.error("Мэдээллийг ачаалахад алдаа гарлаа");
         } finally {
             setLoadingSubjects(false);
         }
@@ -96,6 +113,17 @@ export default function CreateExamPage() {
             return;
         }
 
+        const hasOverRequested = subjects.some(s => {
+            const count = distribution[s.id] || 0;
+            const available = availableCounts[s.id] || 0;
+            return count > available;
+        });
+
+        if (hasOverRequested) {
+            toast.error("Санд байгаа асуултын тооноос их асуулт сонгох боломжгүй!");
+            return;
+        }
+
         if (totalAssigned === 0) {
             toast.error("Дор хаяж нэг сэдвээс асуулт сонгох шаардлагатай");
             return;
@@ -104,7 +132,7 @@ export default function CreateExamPage() {
         setSaving(true);
         try {
             const subjectDistribution = Object.entries(distribution)
-                .filter(([_, count]) => count > 0)
+                .filter(([, count]) => count > 0)
                 .map(([subjectId, count]) => ({ subjectId, count }));
 
             await ExamService.createExam({
@@ -114,6 +142,7 @@ export default function CreateExamPage() {
                 duration: parseInt(formData.duration),
                 grade: formData.grade,
                 maxQuestions: parseInt(formData.maxQuestions),
+                passingScore: parseInt(formData.passingScore) || undefined,
                 status: formData.status,
                 createdBy: user.uid,
                 questionIds: [],
@@ -198,7 +227,7 @@ export default function CreateExamPage() {
 
                             <div className="grid md:grid-cols-3 gap-6">
                                 <div className="space-y-2">
-                                    <label className="text-sm font-semibold text-slate-700">Үргэлжлэх хугацаа (минут)</label>
+                                    <label className="text-sm font-semibold text-slate-700">Хугацаа (минут)</label>
                                     <Input
                                         type="number"
                                         min="1"
@@ -222,7 +251,7 @@ export default function CreateExamPage() {
                                     </Select>
                                 </div>
                                 <div className="space-y-2">
-                                    <label className="text-sm font-semibold text-slate-700">Нийт асуултын тоо</label>
+                                    <label className="text-sm font-semibold text-slate-700">Нийт асуулт</label>
                                     <Input
                                         type="number"
                                         min="1"
@@ -232,16 +261,28 @@ export default function CreateExamPage() {
                                 </div>
                             </div>
 
-                            <div className="space-y-2">
-                                <label className="text-sm font-semibold text-slate-700">Төлөв</label>
-                                <Select
-                                    value={formData.status}
-                                    onChange={(e) => setFormData({ ...formData, status: e.target.value as Exam["status"] })}
-                                >
-                                    <option value="draft">Ноорог (Draft)</option>
-                                    <option value="published">Нийтлэх (Published)</option>
-                                    <option value="archived">Архивлах (Archived)</option>
-                                </Select>
+                            <div className="grid md:grid-cols-2 gap-6">
+                                <div className="space-y-2">
+                                    <label className="text-sm font-semibold text-slate-700">Суурь оноо — тэнцэх босго (%)</label>
+                                    <Input
+                                        type="number"
+                                        min="0"
+                                        max="100"
+                                        value={formData.passingScore}
+                                        onChange={(e) => setFormData({ ...formData, passingScore: e.target.value })}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-semibold text-slate-700">Төлөв</label>
+                                    <Select
+                                        value={formData.status}
+                                        onChange={(e) => setFormData({ ...formData, status: e.target.value as Exam["status"] })}
+                                    >
+                                        <option value="draft">Ноорог (Draft)</option>
+                                        <option value="published">Нийтлэх (Published)</option>
+                                        <option value="archived">Архивлах (Archived)</option>
+                                    </Select>
+                                </div>
                             </div>
                         </CardContent>
                     </Card>
@@ -270,7 +311,7 @@ export default function CreateExamPage() {
                         <CardHeader className="bg-slate-50 border-b border-slate-200 py-4 flex flex-row items-center justify-between">
                             <CardTitle className="text-sm font-bold text-slate-600 flex items-center gap-2">
                                 <BookOpen className="w-4 h-4" />
-                                Алхам 2: Сэдвүүдийн хуваарилалт
+                                Алхам 2: Хичээл / Сэдвүүдийн хуваарилалт
                             </CardTitle>
                             <div className={`px-3 py-1 rounded-full text-xs font-bold border ${totalAssigned > parseInt(formData.maxQuestions) ? 'bg-red-50 text-red-600 border-red-200' : 'bg-blue-50 text-blue-600 border-blue-200'}`}>
                                 Сонгосон: {totalAssigned} / {formData.maxQuestions}
@@ -281,23 +322,51 @@ export default function CreateExamPage() {
                                 {subjects.length === 0 ? (
                                     <div className="p-8 text-center text-slate-500 italic">Сэдэв олдсонгүй. Энэ ангид сэдэв бүртгэгдээгүй байна.</div>
                                 ) : (
-                                    subjects.map((s) => (
-                                        <div key={s.id} className="p-4 flex items-center justify-between hover:bg-slate-50/50 transition-colors">
-                                            <div className="font-medium text-slate-700">{s.name}</div>
-                                            <div className="w-24">
-                                                <Input
-                                                    type="number"
-                                                    min="0"
-                                                    value={distribution[s.id] || 0}
-                                                    onChange={(e) => setDistribution({
-                                                        ...distribution,
-                                                        [s.id]: parseInt(e.target.value) || 0
-                                                    })}
-                                                    className="h-8 text-center"
-                                                />
+                                    subjects.map((s) => {
+                                        const count = distribution[s.id] || 0;
+                                        const available = availableCounts[s.id] || 0;
+                                        const deficit = count > available ? count - available : 0;
+
+                                        return (
+                                            <div key={s.id} className="p-4 flex items-center justify-between hover:bg-slate-50/50 transition-colors">
+                                                <div className="flex flex-col">
+                                                    <div className="font-medium text-slate-700">{s.name}</div>
+                                                    <div className="flex items-center gap-2 mt-1">
+                                                        {(s as Subject & { lessonId?: string }).lessonId && (
+                                                            <span className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded-full font-bold border border-indigo-100">
+                                                                {lessonsMap[(s as Subject & { lessonId?: string }).lessonId!] || "?"}
+                                                            </span>
+                                                        )}
+                                                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                                                            Санд байгаа: {available}
+                                                        </span>
+                                                        {deficit > 0 ? (
+                                                            <span className="text-[10px] bg-red-50 text-red-900 px-1.5 py-0.5 rounded font-bold border border-red-100">
+                                                                {deficit} асуулт дутуу
+                                                            </span>
+                                                        ) : count > 0 && (
+                                                            <span className="text-[10px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded font-bold border border-emerald-100">
+                                                                Бүрэн
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                <div className="w-24">
+                                                    <Input
+                                                        type="number"
+                                                        min="0"
+                                                        max={available}
+                                                        value={count}
+                                                        onChange={(e) => setDistribution({
+                                                            ...distribution,
+                                                            [s.id]: parseInt(e.target.value) || 0
+                                                        })}
+                                                        className={`h-8 text-center font-bold ${deficit > 0 ? 'border-red-300 text-red-600 focus:ring-red-500' : ''}`}
+                                                    />
+                                                </div>
                                             </div>
-                                        </div>
-                                    ))
+                                        );
+                                    })
                                 )}
                             </div>
                         </CardContent>

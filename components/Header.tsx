@@ -4,14 +4,12 @@ import { useAuth } from "@/components/AuthProvider";
 import { Button } from "@/components/ui/Button";
 import { auth } from "@/lib/firebase";
 import { signOut } from "firebase/auth";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ChevronDown, Users, FileQuestion, ClipboardList, BookOpen, GraduationCap } from "lucide-react";
+import { ChevronDown, Users, FileQuestion, ClipboardList, BookOpen, FileText } from "lucide-react";
 import { useState } from "react";
 
 export default function Header() {
     const { profile } = useAuth();
-    const router = useRouter();
     const [menuOpen, setMenuOpen] = useState(false);
 
     const handleLogout = async () => {
@@ -48,6 +46,7 @@ export default function Header() {
                 { label: "Хэрэглэгчид", href: "/admin/users", icon: Users },
                 { label: "Асуултын сан", href: "/admin/questions", icon: FileQuestion },
                 { label: "Шалгалтууд", href: "/admin/exams", icon: BookOpen },
+                { label: "Хүсэлтүүд", href: "/admin/requests", icon: FileText },
                 { label: "Сэдвүүд", href: "/admin/settings/subjects", icon: BookOpen },
             ];
         }
@@ -56,6 +55,7 @@ export default function Header() {
                 { label: "Хянах самбар", href: "/teacher", icon: ClipboardList },
                 { label: "Асуултын сан", href: "/teacher/questions", icon: BookOpen },
                 { label: "Асуулт үүсгэх", href: "/teacher/questions/create", icon: FileQuestion },
+                { label: "Шалгалтууд", href: "/teacher/exams", icon: ClipboardList },
             ];
         }
         if (profile?.role === 'student') {

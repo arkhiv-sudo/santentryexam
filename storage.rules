@@ -1,9 +1,22 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
+    // Questions images — only admin/teacher write, all authenticated read
+    match /questions/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role in ['admin', 'teacher'];
+    }
+    // Profile pictures — each user can write their own, all can read
+    match /profiles/{userId}/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+    // Catch-all: authenticated read, admin-only write for anything else
     match /{allPaths=**} {
-      // Allow authenticated users to read and write
-      allow read, write: if request.auth != null;
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
   }
 }

@@ -8,14 +8,17 @@ import { Select } from "@/components/ui/Select";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-    Settings, Database, Bell, Shield, Mail, Globe,
+    Settings, Mail, Globe,
     HardDrive, Cpu, Users, FileQuestion, ClipboardList, BookOpen,
-    CircleDot
+    CircleDot, Plus, Trash2
 } from "lucide-react";
 import { toast } from "sonner";
 import { db, functions } from "@/lib/firebase";
 import { doc, onSnapshot } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
+import { SettingsService } from "@/lib/services/settings-service";
+import { Lesson, Subject } from "@/types";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 const STATS_CACHE_KEY = "admin_stats_cache";
 
@@ -25,13 +28,39 @@ export default function SettingsPage() {
     const [saving, setSaving] = useState(false);
     const [isLive, setIsLive] = useState(false);
     const [usageLoading, setUsageLoading] = useState(false);
+    const queryClient = useQueryClient();
+
+    // ── Lesson (Хичээл) state ──────────────────────────────────
+    const [newLessonName, setNewLessonName] = useState("");
+    const [addingLesson, setAddingLesson] = useState(false);
+
+    // ── Subject (Сэдэв) state ─────────────────────────────────
+    const [newSubjectName, setNewSubjectName] = useState("");
+    const [newSubjectLessonId, setNewSubjectLessonId] = useState("");
+    const [addingSubject, setAddingSubject] = useState(false);
+
+    const { data: lessons = [], isLoading: lessonsLoading } = useQuery<Lesson[]>({
+        queryKey: ["lessons"],
+        queryFn: () => SettingsService.getLessons(),
+        staleTime: 5 * 60 * 1000,
+    });
+
+    const { data: subjects = [], isLoading: subjectsLoading } = useQuery<Subject[]>({
+        queryKey: ["subjects_list_settings"],
+        queryFn: () => SettingsService.getSubjects(),
+        staleTime: 5 * 60 * 1000,
+    });
+
+    const lessonsMap = Object.fromEntries(lessons.map(l => [l.id, l.name]));
+
+
     const [usage, setUsage] = useState<{
         reads: number,
         writes: number,
         deletes: number,
         firestoreSize?: number,
         storageSize?: number,
-        history?: any[]
+        history?: { date: string, reads: number, writes: number, deletes: number, isToday?: boolean }[]
     } | null>(null);
 
     // Stats state with local cache
@@ -93,7 +122,7 @@ export default function SettingsPage() {
             try {
                 const getUsageFn = httpsCallable(functions, 'getInfrastructureUsage');
                 const result = await getUsageFn();
-                const data = result.data as any;
+                const data = result.data as { success: boolean, usage: { reads: number, writes: number, deletes: number, firestoreSize?: number, storageSize?: number, history?: { date: string, reads: number, writes: number, deletes: number, isToday?: boolean }[] } };
                 if (data.success) {
                     setUsage(data.usage);
                 }
@@ -120,6 +149,50 @@ export default function SettingsPage() {
             toast.success("Тохиргоо хадгалагдлаа");
         }, 1000);
     };
+
+    const handleAddLesson = async () => {
+        if (!newLessonName.trim()) { toast.error("Хичээлийн нэр оруулна уу"); return; }
+        setAddingLesson(true);
+        try {
+            await SettingsService.createLesson(newLessonName.trim());
+            setNewLessonName("");
+            queryClient.invalidateQueries({ queryKey: ["lessons"] });
+            toast.success("Хичээл нэмэгдлээ");
+        } catch { toast.error("Алдаа гарлаа"); }
+        finally { setAddingLesson(false); }
+    };
+
+    const handleDeleteLesson = async (id: string) => {
+        try {
+            await SettingsService.deleteLesson(id);
+            queryClient.invalidateQueries({ queryKey: ["lessons"] });
+            toast.success("Хичээл устгагдлаа");
+        } catch { toast.error("Устгахад алдаа гарлаа"); }
+    };
+
+    const handleAddSubject = async () => {
+        if (!newSubjectName.trim()) { toast.error("Сэдвийн нэр оруулна уу"); return; }
+        if (!newSubjectLessonId) { toast.error("Хичээлийг сонгоно уу"); return; }
+        setAddingSubject(true);
+        try {
+            await SettingsService.createSubject(newSubjectName.trim(), undefined, newSubjectLessonId);
+            setNewSubjectName("");
+            queryClient.invalidateQueries({ queryKey: ["subjects_list_settings"] });
+            queryClient.invalidateQueries({ queryKey: ["subjects_list"] });
+            toast.success("Сэдэв нэмэгдлээ");
+        } catch { toast.error("Алдаа гарлаа"); }
+        finally { setAddingSubject(false); }
+    };
+
+    const handleDeleteSubject = async (id: string) => {
+        try {
+            await SettingsService.deleteSubject(id);
+            queryClient.invalidateQueries({ queryKey: ["subjects_list_settings"] });
+            queryClient.invalidateQueries({ queryKey: ["subjects_list"] });
+            toast.success("Сэдэв устгагдлаа");
+        } catch { toast.error("Устгахад алдаа гарлаа"); }
+    };
+
 
     return (
         <div className="space-y-6">
@@ -163,6 +236,96 @@ export default function SettingsPage() {
                 </div>
             </div>
 
+            {/* ── Lesson (Хичээл) Management ──────────────────── */}
+            <Card>
+                <CardHeader>
+                    <CardTitle className="text-lg font-bold flex items-center gap-2">
+                        <BookOpen className="w-5 h-5 text-indigo-600" />
+                        Хичээл удирдлага
+                    </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    {/* Add lesson */}
+                    <div className="flex gap-2">
+                        <Input
+                            placeholder="Хичээлийн нэр (жш: Математик)"
+                            value={newLessonName}
+                            onChange={e => setNewLessonName(e.target.value)}
+                            onKeyDown={e => e.key === "Enter" && handleAddLesson()}
+                        />
+                        <Button onClick={handleAddLesson} disabled={addingLesson} className="bg-indigo-600 hover:bg-indigo-700 text-white gap-1 shrink-0">
+                            <Plus className="w-4 h-4" /> Нэмэх
+                        </Button>
+                    </div>
+                    {/* Lesson list */}
+                    {lessonsLoading ? <p className="text-sm text-slate-400">Уншиж байна...</p> : (
+                        <div className="divide-y rounded-lg border border-slate-200 overflow-hidden">
+                            {lessons.length === 0 && <p className="px-4 py-3 text-sm text-slate-400 text-center">Хичээл байхгүй байна</p>}
+                            {lessons.map(l => (
+                                <div key={l.id} className="flex items-center justify-between px-4 py-2.5 bg-white hover:bg-slate-50">
+                                    <span className="text-sm font-medium text-slate-800">{l.name}</span>
+                                    <button onClick={() => handleDeleteLesson(l.id)} className="text-slate-400 hover:text-red-500 transition-colors">
+                                        <Trash2 className="w-4 h-4" />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </CardContent>
+            </Card>
+
+            {/* ── Subject (Сэдэв) Management ───────────────────── */}
+            <Card>
+                <CardHeader>
+                    <CardTitle className="text-lg font-bold flex items-center gap-2">
+                        <BookOpen className="w-5 h-5 text-emerald-600" />
+                        Сэдэв удирдлага
+                    </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    {/* Add subject */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                        <select
+                            className="col-span-1 border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                            value={newSubjectLessonId}
+                            onChange={e => setNewSubjectLessonId(e.target.value)}
+                        >
+                            <option value="">-- Хичээл сонгох --</option>
+                            {lessons.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+                        </select>
+                        <input
+                            className="col-span-2 border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                            placeholder="Сэдвийн нэр (жш: Алгебр)"
+                            value={newSubjectName}
+                            onChange={e => setNewSubjectName(e.target.value)}
+                            onKeyDown={e => e.key === "Enter" && handleAddSubject()}
+                        />
+                        <Button onClick={handleAddSubject} disabled={addingSubject || lessons.length === 0} className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1">
+                            <Plus className="w-4 h-4" /> Нэмэх
+                        </Button>
+                    </div>
+                    {/* Subject list */}
+                    {subjectsLoading ? <p className="text-sm text-slate-400">Уншиж байна...</p> : (
+                        <div className="divide-y rounded-lg border border-slate-200 overflow-hidden max-h-80 overflow-y-auto">
+                            {subjects.length === 0 && <p className="px-4 py-3 text-sm text-slate-400 text-center">Сэдэв байхгүй байна</p>}
+                            {subjects.map(s => (
+                                <div key={s.id} className="flex items-center justify-between px-4 py-2.5 bg-white hover:bg-slate-50">
+                                    <div>
+                                        <span className="text-sm font-medium text-slate-800">{s.name}</span>
+                                        {s.lessonId && <span className="ml-2 text-xs text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded-full">{lessonsMap[s.lessonId] || "?"}</span>}
+                                    </div>
+                                    <button onClick={() => handleDeleteSubject(s.id)} className="text-slate-400 hover:text-red-500 transition-colors">
+                                        <Trash2 className="w-4 h-4" />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </CardContent>
+            </Card>
+
+
+
             <div className="space-y-6">
                 {/* Database Usage - Real-time Data Focus */}
                 <Card>
@@ -193,7 +356,7 @@ export default function SettingsPage() {
                                         {item.icon}
                                         <span className="text-xs font-semibold">{item.label}</span>
                                     </div>
-                                    <p className="text-3xl font-bold tracking-tight text-slate-900 border-l-2 border-slate-100 pl-3">
+                                    <p className="text-2xl font-bold tracking-tight text-slate-900 border-l-2 border-slate-100 pl-3">
                                         {(item.value || 0).toLocaleString()}
                                     </p>
                                 </div>
@@ -250,7 +413,7 @@ export default function SettingsPage() {
                                     <p className="text-sm font-bold text-slate-900">Сүүлийн 7 хоногийн түүх</p>
                                 </div>
                                 <div className="space-y-2 overflow-y-auto max-h-[220px] pr-2 scrollbar-thin scrollbar-thumb-slate-200">
-                                    {usage?.history?.slice().reverse().map((day: any, i: number) => (
+                                    {usage?.history?.slice().reverse().map((day: { date: string, isToday?: boolean, reads: number, writes: number, deletes: number }, i: number) => (
                                         <div key={i} className={`p-2 rounded-lg border ${day.isToday ? 'bg-white border-indigo-100 shadow-sm' : 'bg-transparent border-transparent'}`}>
                                             <div className="flex justify-between items-center mb-1">
                                                 <span className={`text-[10px] font-bold uppercase ${day.isToday ? 'text-indigo-600' : 'text-slate-400'}`}>

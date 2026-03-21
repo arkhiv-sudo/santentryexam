@@ -1,9 +1,8 @@
 import "server-only";
 import { initializeApp, getApps, cert } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
+import { getFirestore } from "firebase-admin/firestore";
 
-// You should put your service account key in .env.local
-// For this setup, we'll try to use environment variables mapped to the service account
 const pKey = process.env.FIREBASE_PRIVATE_KEY;
 if (!pKey) {
     console.warn("FIREBASE_PRIVATE_KEY is not set in environment.");
@@ -15,11 +14,11 @@ const serviceAccount = {
     privateKey: pKey?.replace(/\\n/g, "\n"),
 };
 
-// Lazy initialization or check
 const app = !getApps().length
-    ? (pKey ? initializeApp({
-        credential: cert(serviceAccount),
-    }) : getApps()[0]) // Hack to avoid crash if key missing during build, but API will fail
+    ? pKey
+        ? initializeApp({ credential: cert(serviceAccount) })
+        : initializeApp()
     : getApps()[0];
 
 export const adminAuth = getAuth(app);
+export const adminDb = getFirestore(app);

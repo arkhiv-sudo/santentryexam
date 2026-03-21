@@ -13,7 +13,9 @@ import {
     startAfter,
     getCountFromServer,
     DocumentData,
-    QueryDocumentSnapshot
+    QueryDocumentSnapshot,
+    QueryConstraint,
+    writeBatch
 } from "firebase/firestore";
 import { Question, QuestionType, UserRole, UserProfile } from "@/types";
 
@@ -22,7 +24,7 @@ const COLLECTION_NAME = "questions";
 /**
  * Strips undefined fields from an object to prevent Firestore errors.
  */
-function cleanObject(obj: any): any {
+function cleanObject(obj: Record<string, unknown>): Record<string, unknown> {
     const result = { ...obj };
     Object.keys(result).forEach(key => {
         if (result[key] === undefined) {
@@ -57,7 +59,7 @@ export const QuestionService = {
         createdBy?: string | "all"
     ): Promise<{ questions: Question[], lastVisible: QueryDocumentSnapshot<DocumentData> | null, totalCount: number }> => {
         try {
-            let constraints: any[] = [];
+            const constraints: QueryConstraint[] = [];
 
             if (type && type !== "all") {
                 constraints.push(where("type", "==", type));
@@ -80,16 +82,20 @@ export const QuestionService = {
             constraints.push(orderBy("createdAt", "desc"));
             constraints.push(orderBy("__name__", "desc")); // Stable sort tie-breaker
 
-            const totalCountQuery = query(collection(db, COLLECTION_NAME), ...constraints);
+            // Snapshot the base constraints BEFORE adding pagination-specific ones,
+            // so totalCount is not affected by startAfter / limit.
+            const baseConstraints = [...constraints];
+            const totalCountQuery = query(collection(db, COLLECTION_NAME), ...baseConstraints);
             const totalSnapshot = await getCountFromServer(totalCountQuery);
             const totalCount = totalSnapshot.data().count;
 
+            const pageConstraints = [...baseConstraints];
             if (lastDoc) {
-                constraints.push(startAfter(lastDoc));
+                pageConstraints.push(startAfter(lastDoc));
             }
-            constraints.push(limit(pageSize));
+            pageConstraints.push(limit(pageSize));
 
-            const q = query(collection(db, COLLECTION_NAME), ...constraints);
+            const q = query(collection(db, COLLECTION_NAME), ...pageConstraints);
             const snapshot = await getDocs(q);
 
             const questions = snapshot.docs.map(doc => ({
@@ -106,10 +112,10 @@ export const QuestionService = {
         }
     },
 
-    getQuestionsByFilters: async (category?: string, type?: QuestionType): Promise<Question[]> => {
+    getQuestionsByFilters: async (subject?: string, type?: QuestionType): Promise<Question[]> => {
         try {
-            let constraints = [];
-            if (category) constraints.push(where("category", "==", category));
+            const constraints: QueryConstraint[] = [];
+            if (subject) constraints.push(where("subject", "==", subject));
             if (type) constraints.push(where("type", "==", type));
 
             const q = query(collection(db, COLLECTION_NAME), ...constraints);
@@ -140,6 +146,31 @@ export const QuestionService = {
         }
     },
 
+    createQuestionsBatch: async (questions: Omit<Question, "id">[]): Promise<void> => {
+        try {
+            const questionsRef = collection(db, COLLECTION_NAME);
+            
+            for (let i = 0; i < questions.length; i += 500) {
+                const chunk = questions.slice(i, i + 500);
+                const batch = writeBatch(db);
+                
+                chunk.forEach(q => {
+                    const newDocRef = doc(questionsRef);
+                    batch.set(newDocRef, cleanObject({
+                        ...q,
+                        createdAt: q.createdAt || new Date().toISOString(), // Ensure createdAt is string
+                        updatedAt: new Date().toISOString()
+                    }));
+                });
+                
+                await batch.commit();
+            }
+        } catch (error) {
+            console.error("Error batch creating questions:", error);
+            throw error;
+        }
+    },
+
     updateQuestion: async (id: string, updates: Partial<Question>): Promise<void> => {
         try {
             const docRef = doc(db, COLLECTION_NAME, id);
@@ -147,7 +178,8 @@ export const QuestionService = {
                 ...updates,
                 updatedAt: new Date().toISOString()
             });
-            await updateDoc(docRef, cleaned);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await updateDoc(docRef, cleaned as any);
         } catch (error) {
             console.error("Error updating question:", error);
             throw error;
@@ -163,51 +195,52 @@ export const QuestionService = {
         }
     },
 
-    createQuestionsBatch: async (questions: Omit<Question, "id">[]): Promise<void> => {
+    bulkDeleteQuestions: async (ids: string[]): Promise<void> => {
         try {
-            const promises = questions.map(q => {
-                const now = new Date().toISOString();
-                const cleaned = cleanObject({
-                    ...q,
-                    createdAt: now,
-                    updatedAt: now
-                });
-                return addDoc(collection(db, COLLECTION_NAME), cleaned);
-            });
-            await Promise.all(promises);
-        } catch (error) {
-            console.error("Error in batch creation:", error);
-            throw error;
-        }
-    },
-
-    /**
-     * Migration: Adds createdAt to legacy questions that don't have it.
-     */
-    migrateLegacyQuestions: async (): Promise<number> => {
-        try {
-            const q = query(collection(db, COLLECTION_NAME));
-            const snapshot = await getDocs(q);
-            let count = 0;
-            const now = new Date().toISOString();
-
-            for (const document of snapshot.docs) {
-                const data = document.data();
-                if (!data.createdAt) {
-                    const docRef = doc(db, COLLECTION_NAME, document.id);
-                    await updateDoc(docRef, {
-                        createdAt: now,
-                        updatedAt: now
-                    });
-                    count++;
-                }
+            // Firestore batches allow up to 500 operations.
+            const chunks = [];
+            for (let i = 0; i < ids.length; i += 500) {
+                chunks.push(ids.slice(i, i + 500));
             }
-            return count;
+
+            for (const chunk of chunks) {
+                const batch = writeBatch(db);
+                chunk.forEach(id => {
+                    batch.delete(doc(db, COLLECTION_NAME, id));
+                });
+                await batch.commit();
+            }
         } catch (error) {
-            console.error("Migration failed:", error);
+            console.error("Error bulk deleting questions:", error);
             throw error;
         }
     },
+
+    deleteAllMatchingQuestions: async (
+        type?: QuestionType | "all",
+        subject?: string | "all",
+        grade?: string | "all",
+        createdBy?: string | "all"
+    ): Promise<number> => {
+        try {
+            const constraints: QueryConstraint[] = [];
+            if (type && type !== "all") constraints.push(where("type", "==", type));
+            if (subject && subject !== "all") constraints.push(where("subject", "==", subject));
+            if (grade && grade !== "all") constraints.push(where("grade", "==", grade));
+            if (createdBy && createdBy !== "all") constraints.push(where("createdBy", "==", createdBy));
+
+            const q = query(collection(db, COLLECTION_NAME), ...constraints);
+            const snapshot = await getDocs(q);
+            const ids = snapshot.docs.map(doc => doc.id);
+
+            await QuestionService.bulkDeleteQuestions(ids);
+            return ids.length;
+        } catch (error) {
+            console.error("Error deleting all matching questions:", error);
+            throw error;
+        }
+    },
+
 
     /**
      * Common: Fetch users by specific roles (e.g., admin, teacher)
@@ -217,10 +250,36 @@ export const QuestionService = {
             const usersRef = collection(db, "users");
             const q = query(usersRef, where("role", "in", roles));
             const snapshot = await getDocs(q);
-            return snapshot.docs.map(doc => doc.data() as UserProfile);
+            return snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile));
         } catch (error) {
             console.error("Error fetching users by roles:", error);
             return [];
+        }
+    },
+
+    /**
+     * Fetch question counts for specific grade and subjects
+     */
+    getQuestionCounts: async (grade: string, subjectIds: string[]): Promise<Record<string, number>> => {
+        try {
+            const counts: Record<string, number> = {};
+
+            // For now, we fetch each count individually as Firestore doesn't support GROUP BY easily
+            // We use Promise.all for parallelism
+            await Promise.all(subjectIds.map(async (subjectId) => {
+                const q = query(
+                    collection(db, COLLECTION_NAME),
+                    where("grade", "==", grade),
+                    where("subject", "==", subjectId)
+                );
+                const snapshot = await getCountFromServer(q);
+                counts[subjectId] = snapshot.data().count;
+            }));
+
+            return counts;
+        } catch (error) {
+            console.error("Error fetching question counts:", error);
+            return {};
         }
     }
 };

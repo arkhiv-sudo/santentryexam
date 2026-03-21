@@ -1,16 +1,16 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Question, QuestionType } from "@/types";
+import { Question, QuestionType, Lesson } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
-import { Trash2, Plus, ArrowLeft, Save, Eye, ImageIcon, Loader2 } from "lucide-react";
+import { Card, CardContent, CardHeader } from "@/components/ui/Card";
+import { Trash2, Plus, ArrowLeft, Save, ImageIcon, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { SettingsService } from "@/lib/services/settings-service";
 import { UploadService } from "@/lib/services/upload-service";
-import { Grade, Subject } from "@/types";
+import { Subject } from "@/types";
 import { QuestionPreviewModal } from "./exam/QuestionPreviewModal";
 import QuestionPreview from "./exam/QuestionPreview";
 
@@ -33,7 +33,9 @@ export function QuestionForm({
 }: QuestionFormProps) {
     const router = useRouter();
     const [allSubjects, setAllSubjects] = useState<Subject[]>([]);
+    const [allLessons, setAllLessons] = useState<Lesson[]>([]);
     const [filteredSubjects, setFilteredSubjects] = useState<Subject[]>([]);
+    const [selectedLessonId, setSelectedLessonId] = useState<string>("");
     const [uploadingMedia, setUploadingMedia] = useState(false);
     const [uploadingSolutionMedia, setUploadingSolutionMedia] = useState(false);
     const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -44,7 +46,6 @@ export function QuestionForm({
         options: [""],
         correctAnswer: "",
         points: 1,
-        category: "",
         subject: "",
         grade: "",
         solution: "",
@@ -59,8 +60,12 @@ export function QuestionForm({
     useEffect(() => {
         const loadSettings = async () => {
             try {
-                const sData = await SettingsService.getSubjects();
+                const [sData, lData] = await Promise.all([
+                    SettingsService.getSubjects(),
+                    SettingsService.getLessons()
+                ]);
                 setAllSubjects(sData);
+                setAllLessons(lData);
             } catch (error) {
                 console.error("Failed to load settings:", error);
             }
@@ -76,7 +81,6 @@ export function QuestionForm({
                 options: initialData.options || [""],
                 correctAnswer: initialData.correctAnswer,
                 points: initialData.points || 1,
-                category: initialData.category || "",
                 subject: initialData.subject || "",
                 grade: initialData.grade || "",
                 solution: initialData.solution || "",
@@ -87,18 +91,25 @@ export function QuestionForm({
                 optionImages: initialData.optionImages || [],
                 createdBy: initialData.createdBy || ""
             });
-        }
-    }, [initialData]);
 
-    // Filter subjects when grade changes
-    useEffect(() => {
-        if (formData.grade) {
-            const filtered = allSubjects.filter(s => !s.gradeId || s.gradeId === formData.grade);
-            setFilteredSubjects(filtered);
-        } else {
-            setFilteredSubjects(allSubjects);
+            if (initialData.subject && allSubjects.length > 0) {
+                const sub = allSubjects.find(s => s.id === initialData.subject);
+                if (sub?.lessonId) setSelectedLessonId(sub.lessonId);
+            }
         }
-    }, [formData.grade, allSubjects]);
+    }, [initialData, allSubjects]);
+
+    // Filter subjects when grade or lesson changes
+    useEffect(() => {
+        let filtered = allSubjects;
+        if (selectedLessonId) {
+            filtered = filtered.filter(s => s.lessonId === selectedLessonId);
+        }
+        if (formData.grade) {
+            filtered = filtered.filter(s => !s.gradeId || s.gradeId === formData.grade);
+        }
+        setFilteredSubjects(filtered);
+    }, [formData.grade, selectedLessonId, allSubjects]);
 
     const handleOptionChange = (index: number, value: string) => {
         const newOptions = [...(formData.options || [])];
@@ -168,7 +179,7 @@ export function QuestionForm({
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        await onSubmit(formData as any);
+        await onSubmit(formData as Omit<Question, "id">);
     };
 
     return (
@@ -205,7 +216,7 @@ export function QuestionForm({
                                     required
                                 />
                                 <p className="text-[10px] text-slate-400 mt-1 font-medium italic">
-                                    Математик: $x^2$, Код: ``` code ``` ашиглана уу.
+                                    Математик: $x^2$, Код: ``` code ``` ашиглана уу. Нөхөх асуултанд: `___` (3 доогуур зураас) эсвэл хоосон зай үлдээж бичнэ.
                                 </p>
                             </div>
 
@@ -217,6 +228,7 @@ export function QuestionForm({
                                         onChange={(e) => setFormData({ ...formData, type: e.target.value as QuestionType })}
                                     >
                                         <option value="multiple_choice">Сонгох (Олон хувилбарт)</option>
+                                        <option value="fill_in_blank">Нөхөх (Хоосон зайнд бичих)</option>
                                         <option value="input">Хариу оруулах (Богино хариулт)</option>
                                     </Select>
                                 </div>
@@ -238,7 +250,7 @@ export function QuestionForm({
                     {formData.type === "multiple_choice" && (
                         <Card className="border-blue-100 bg-blue-50/30">
                             <CardContent className="pt-6 space-y-4">
-                                <label className="block text-sm font-bold text-blue-900 mb-2 flex justify-between items-center">
+                                <label className="flex text-sm font-bold text-blue-900 mb-2 justify-between items-center">
                                     Сонголтууд
                                     {formData.options && formData.options.length < 5 && (
                                         <button
@@ -286,6 +298,7 @@ export function QuestionForm({
                                                     </label>
                                                     {formData.optionImages?.[index] && (
                                                         <div className="flex items-center gap-2 group/img relative">
+                                                            {/* eslint-disable-next-line @next/next/no-img-element */}
                                                             <img src={formData.optionImages[index]} className="w-8 h-8 object-cover rounded border border-slate-200" alt="Option" />
                                                             <button
                                                                 type="button"
@@ -373,6 +386,7 @@ export function QuestionForm({
                                     </label>
                                     {formData.solutionMediaUrl && (
                                         <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200">
+                                            {/* eslint-disable-next-line @next/next/no-img-element */}
                                             <img src={formData.solutionMediaUrl} className="w-8 h-8 object-cover rounded" alt="Preview" />
                                             <button
                                                 type="button"
@@ -393,7 +407,7 @@ export function QuestionForm({
                             <h3 className="font-bold text-slate-900">Бусад мэдээлэл</h3>
                         </CardHeader>
                         <CardContent className="space-y-4">
-                            <div className="grid sm:grid-cols-2 gap-4">
+                            <div className="grid sm:grid-cols-3 gap-4">
                                 <div>
                                     <label className="block text-sm font-semibold text-slate-700 mb-2">Анги</label>
                                     <Select
@@ -409,11 +423,29 @@ export function QuestionForm({
                                 </div>
 
                                 <div>
-                                    <label className="block text-sm font-semibold text-slate-700 mb-2">Сэдэв / Хичээл</label>
+                                    <label className="block text-sm font-semibold text-slate-700 mb-2">Хичээл</label>
+                                    <Select
+                                        value={selectedLessonId}
+                                        onChange={(e) => {
+                                            setSelectedLessonId(e.target.value);
+                                            setFormData({ ...formData, subject: "" });
+                                        }}
+                                        required
+                                    >
+                                        <option value="">Сонгох...</option>
+                                        {allLessons.map(l => (
+                                            <option key={l.id} value={l.id}>{l.name}</option>
+                                        ))}
+                                    </Select>
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-semibold text-slate-700 mb-2">Сэдэв</label>
                                     <Select
                                         value={formData.subject}
                                         onChange={(e) => setFormData({ ...formData, subject: e.target.value })}
                                         required
+                                        disabled={!selectedLessonId}
                                     >
                                         <option value="">Сонгох...</option>
                                         {filteredSubjects.map(s => (
@@ -448,6 +480,7 @@ export function QuestionForm({
                                     </label>
                                     {formData.mediaUrl && (
                                         <div className="relative rounded-xl overflow-hidden border border-slate-200">
+                                            {/* eslint-disable-next-line @next/next/no-img-element */}
                                             <img src={formData.mediaUrl} className="w-full h-auto max-h-48 object-contain bg-white" alt="Preview" />
                                             <button
                                                 type="button"

@@ -1,28 +1,31 @@
 "use client";
 
 import { useEffect } from "react";
-import { collection, getDocs } from "firebase/firestore";
+import { collection, getDocs, doc, updateDoc } from "firebase/firestore";
 import { db, auth } from "@/lib/firebase";
 import { UserProfile, UserRole } from "@/types";
-import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Select } from "@/components/ui/Select";
 import { useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useConfirm } from "@/components/providers/ModalProvider";
+import { Trash2 } from "lucide-react";
 
 export default function AdminUsersPage() {
     const { profile, loading: authLoading } = useAuth();
     const queryClient = useQueryClient();
     const router = useRouter();
+    const confirm = useConfirm();
     const { data: users = [], isLoading: loading } = useQuery<UserProfile[]>({
         queryKey: ["users"],
         queryFn: async () => {
             const querySnapshot = await getDocs(collection(db, "users"));
-            return querySnapshot.docs.map((doc) => doc.data() as UserProfile);
+            return querySnapshot.docs.map((doc) => ({ uid: doc.id, ...doc.data() }) as UserProfile);
         },
-        staleTime: 15 * 60 * 1000, // 15 minutes
+        staleTime: 10 * 60 * 1000, // 10 minutes — avoids refetch on tab-focus
+        gcTime: 15 * 60 * 1000,
     });
 
     useEffect(() => {
@@ -51,9 +54,27 @@ export default function AdminUsersPage() {
             // Also update Firestore for consistency/UI (optional but good for sync)
             queryClient.invalidateQueries({ queryKey: ["users"] });
             toast.success("Эрх амжилттай шинэчлэгдлээ");
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error("Error updating role:", error);
-            toast.error(error.message || "Эрх шинэчлэхэд алдаа гарлаа");
+            toast.error(error instanceof Error ? error.message : "Эрх шинэчлэхэд алдаа гарлаа");
+        }
+    };
+
+    const handleArchiveUser = async (uid: string) => {
+        const confirmed = await confirm({
+            title: "Хэрэглэгчийг устгах",
+            message: "Та энэ хэрэглэгчийг устгахдаа итгэлтэй байна уу? Өгөгдөл нь архивт хадгалагдан үлдэх бөгөөд систем рүү нэвтрэх эрхгүй болно.",
+            variant: "destructive",
+            confirmLabel: "Устгах"
+        });
+        if (!confirmed) return;
+        try {
+            const userRef = doc(db, "users", uid);
+            await updateDoc(userRef, { status: "archived" });
+            queryClient.invalidateQueries({ queryKey: ["users"] });
+            toast.success("Хэрэглэгч архивлагдлаа");
+        } catch {
+            toast.error("Алдаа гарлаа");
         }
     };
 
@@ -68,11 +89,11 @@ export default function AdminUsersPage() {
 
     return (
         <div className="space-y-6">
-            {/* Subtle Header */}
-            <div className="relative overflow-hidden rounded-xl bg-gradient-to-r from-slate-50 to-blue-50 p-6 border border-slate-200">
+            {/* Compact Header */}
+            <div className="relative overflow-hidden rounded-xl bg-linear-to-r from-slate-50 to-blue-50/50 px-6 py-5 border border-slate-200 shadow-sm">
                 <div>
-                    <h1 className="text-3xl font-bold tracking-tight text-slate-900">Хэрэглэгчийн удирдлага</h1>
-                    <p className="text-slate-600 mt-1">Бүх хэрэглэгчдийг харах, засах, эрх өөрчлөх</p>
+                    <h1 className="text-xl font-bold tracking-tight text-slate-900">Хэрэглэгчийн удирдлага</h1>
+                    <p className="text-slate-500 mt-1 text-sm">Бүх хэрэглэгчдийг харах, засах, эрх өөрчлөх</p>
                 </div>
             </div>
 
@@ -93,7 +114,7 @@ export default function AdminUsersPage() {
                                 </tr>
                             </thead>
                             <tbody>
-                                {users.map((user) => (
+                                {users.filter(u => u.status !== 'archived').map((user) => (
                                     <tr key={user.uid} className="bg-white border-b">
                                         <td className="px-6 py-4 font-medium text-gray-900 whitespace-nowrap">{user.lastName}</td>
                                         <td className="px-6 py-4 font-medium text-gray-900 whitespace-nowrap">{user.firstName}</td>
@@ -113,17 +134,28 @@ export default function AdminUsersPage() {
                                                 {roleLabels[user.role] || user.role}
                                             </span>
                                         </td>
-                                        <td className="px-6 py-4">
+                                        <td className="px-6 py-4 flex items-center gap-3">
                                             <Select
                                                 value={user.role}
                                                 onChange={(e) => handleRoleUpdate(user.uid, e.target.value as UserRole)}
                                                 className="min-w-[140px]"
+                                                disabled={user.uid === profile?.uid}
                                             >
                                                 <option value="student">Сурагч</option>
                                                 <option value="teacher">Багш</option>
                                                 <option value="parent">Эцэг эх</option>
                                                 <option value="admin">Админ</option>
                                             </Select>
+                                            
+                                            {user.uid !== profile?.uid && (
+                                                <button
+                                                    onClick={() => handleArchiveUser(user.uid)}
+                                                    className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                                    title="Устгах (Архивлах)"
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            )}
                                         </td>
                                     </tr>
                                 ))}

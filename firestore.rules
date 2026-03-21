@@ -1,72 +1,129 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper functions
-    function isAuthenticated() {
+
+    function isAuth() {
       return request.auth != null;
     }
-    
-    function hasRole(role) {
-      return isAuthenticated() && 
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
+
+    function role() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
     }
 
-    // Users Collection
+    function isAdmin() { return isAuth() && role() == 'admin'; }
+    function isTeacher() { return isAuth() && role() == 'teacher'; }
+    function isStudent() { return isAuth() && role() == 'student'; }
+    function isParent() { return isAuth() && role() == 'parent'; }
+
+    function isParentOf(studentId) {
+      return isParent() &&
+        studentId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.children;
+    }
+
+    // Users
     match /users/{userId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && request.auth.uid == userId;
-      allow update, delete: if (isAuthenticated() && request.auth.uid == userId) || hasRole('admin');
+      allow read: if isAuth();
+      allow create: if isAuth() && request.auth.uid == userId;
+      allow update: if (isAuth() && request.auth.uid == userId) || isAdmin();
+      allow delete: if isAdmin();
     }
 
-    // Questions Collection
+    // Questions — students/parents never read directly (served via API route)
     match /questions/{questionId} {
-      allow read: if isAuthenticated();
-      allow create: if hasRole('admin') || hasRole('teacher');
-      allow update, delete: if hasRole('admin') || (hasRole('teacher') && resource.data.createdBy == request.auth.uid);
+      allow read: if isAdmin() || isTeacher();
+      allow create: if isAdmin() || isTeacher();
+      allow update: if isAdmin() || (isTeacher() && resource.data.createdBy == request.auth.uid);
+      allow delete: if isAdmin();
     }
 
-    // Exams Collection
+    // Exams
     match /exams/{examId} {
-      allow read: if isAuthenticated();
-      allow write: if hasRole('admin');
+      allow read: if isAuth();
+      allow write: if isAdmin();
     }
 
-    // Submissions Collection
+    // Registrations
+    match /registrations/{registrationId} {
+      allow read: if isAdmin() || isTeacher()
+        || (isStudent() && resource.data.studentId == request.auth.uid)
+        || (isParent() && isParentOf(resource.data.studentId));
+      allow create: if isStudent() && request.resource.data.studentId == request.auth.uid;
+      allow update: if isAdmin() || (isStudent() && resource.data.studentId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // Submissions
     match /submissions/{submissionId} {
-      allow read: if hasRole('admin') || hasRole('teacher') || (isAuthenticated() && resource.data.studentId == request.auth.uid);
-      allow create: if isAuthenticated() && request.resource.data.studentId == request.auth.uid;
-      allow update, delete: if hasRole('admin');
+      allow read: if isAdmin() || isTeacher()
+        || (isStudent() && resource.data.studentId == request.auth.uid)
+        || (isParent() && isParentOf(resource.data.studentId));
+      allow create: if isStudent() && request.resource.data.studentId == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
     }
 
-    // Grades Collection
+    // Exam Results
+    match /exam_results/{resultId} {
+      allow read: if isAdmin() || isTeacher()
+        || (isStudent() && resource.data.studentId == request.auth.uid)
+        || (isParent() && isParentOf(resource.data.studentId));
+      allow write: if isAdmin();
+    }
+
+    // Exam Answer Keys — server-side only (Admin SDK bypasses), rules for client safety
+    match /exam_answers/{examId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Notifications
+    match /notifications/{notifId} {
+      allow read: if isAuth() && resource.data.recipientId == request.auth.uid;
+      allow update: if isAuth() && resource.data.recipientId == request.auth.uid;
+      allow create: if isAdmin() || isStudent();
+      allow delete: if isAdmin();
+    }
+
+    // Corrections
+    match /corrections/{correctionId} {
+      allow read: if isAdmin() || isTeacher();
+      allow create: if isTeacher();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Grades / Subjects
     match /grades/{gradeId} {
-      allow read: if isAuthenticated();
-      allow write: if hasRole('admin');
+      allow read: if isAuth();
+      allow write: if isAdmin();
     }
 
-    // Subjects Collection
     match /subjects/{subjectId} {
-      allow read: if isAuthenticated();
-      allow write: if hasRole('admin');
+      allow read: if isAuth();
+      allow write: if isAdmin();
     }
 
-    // Image Index Collection (Global Deduplication)
+    // Lessons (Хичээл)
+    match /lessons/{lessonId} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // Image Index
     match /image_index/{hash} {
-      allow read: if isAuthenticated();
-      allow create: if hasRole('admin') || hasRole('teacher');
-      allow update, delete: if hasRole('admin');
+      allow read: if isAuth();
+      allow create: if isAdmin() || isTeacher();
+      allow update, delete: if isAdmin();
     }
 
-    // System Collection (Stats, etc.)
+    // System stats
     match /system/{docId} {
-      allow read: if isAuthenticated(); // Allow all logged in users to see counts
-      allow write: if hasRole('admin');
+      allow read: if isAuth();
+      allow write: if isAdmin();
     }
 
-    // Legacy Statistics Collection
     match /statistics/{docId} {
-      allow read: if isAuthenticated();
-      allow write: if hasRole('admin');
+      allow read: if isAuth();
+      allow write: if isAdmin();
     }
   }
 }

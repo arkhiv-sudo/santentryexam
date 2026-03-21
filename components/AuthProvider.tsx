@@ -58,8 +58,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     } else {
                         // Fallback for new users (Google)
                         const displayName = firebaseUser.displayName || "";
-                        const firstName = displayName.split(' ').pop() || "";
-                        const lastName = displayName.split(' ').slice(0, -1).join(' ') || "";
+                        const nameParts = displayName.trim().split(/\s+/);
+                        const firstName = nameParts[nameParts.length - 1] || "";
+                        const lastName = nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : "";
                         setProfile({
                             uid: firebaseUser.uid,
                             email: firebaseUser.email!,

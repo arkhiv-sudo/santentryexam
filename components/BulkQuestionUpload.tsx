@@ -3,21 +3,19 @@
 import { useState, useRef } from "react";
 import JSZip from "jszip";
 import Papa from "papaparse";
-import { Question, QuestionType, Subject } from "@/types";
+import { Question, QuestionType, Subject, Lesson } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import {
     Download,
-    Upload,
     X,
     Save,
     FileArchive,
     AlertCircle,
     CheckCircle2,
     Trash2,
-    ImageIcon,
     Loader2,
     Eye
 } from "lucide-react";
@@ -27,15 +25,16 @@ import { toast } from "sonner";
 import { UploadService } from "@/lib/services/upload-service";
 import { QuestionService } from "@/lib/services/question-service";
 import { useAuth } from "@/components/AuthProvider";
-import imageCompression from "browser-image-compression";
 
 interface BulkQuestionUploadProps {
     allSubjects: Subject[];
+    allLessons: Lesson[];
     onComplete: () => void;
 }
 
 interface PendingQuestion extends Omit<Question, "id"> {
     tempId: string;
+    lesson?: string;
     imageFile?: File;
     solutionImageFile?: File;
     imagePreview?: string;
@@ -50,13 +49,7 @@ const GRADES_MAP: Record<string, string> = {
 };
 const GRADES_LIST = Object.entries(GRADES_MAP).map(([id, name]) => ({ id, name }));
 
-const COMPRESSION_OPTIONS = {
-    maxSizeMB: 0.2, // 200KB
-    maxWidthOrHeight: 1200,
-    useWebWorker: true
-};
-
-export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUploadProps) {
+export function BulkQuestionUpload({ allSubjects, allLessons, onComplete }: BulkQuestionUploadProps) {
     const { user } = useAuth();
     const [pendingQuestions, setPendingQuestions] = useState<PendingQuestion[]>([]);
     const [loading, setLoading] = useState(false);
@@ -67,7 +60,7 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
 
     const downloadTemplate = async () => {
         const headers = [
-            "Асуулт", "Төрөл (multiple_choice эсвэл input)", "Зөв хариулт", "Оноо", "Анги", "Сэдэв", "Асуултын зураг", "Бодолт", "Бодолтын зураг",
+            "Асуулт", "Төрөл (multiple_choice эсвэл input)", "Зөв хариулт", "Оноо", "Анги", "Хичээл", "Сэдэв", "Асуултын зураг", "Бодолт", "Бодолтын зураг",
             "А", "А-Зураг", "Б", "Б-Зураг", "В", "В-Зураг", "Г", "Г-Зураг", "Д", "Д-Зураг"
         ];
         const exampleData = [
@@ -77,7 +70,8 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
                 "180",
                 "1",
                 "6",
-                "math_id",
+                "Математик",
+                "Алгебр",
                 "triangle.png",
                 "Гурвалжны өнцгүүдийг нэмэхэд 180 гардаг.",
                 "solution.png",
@@ -89,7 +83,8 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
                 "7",
                 "1",
                 "6",
-                "math_id",
+                "Математик",
+                "Алгебр",
                 "",
                 "12 - 5 = 7",
                 "",
@@ -164,7 +159,7 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
 
             const zipCache = new Map<string, { file: File, preview: string }>();
 
-            for (const row of parsed.data as any[]) {
+            for (const row of parsed.data as Record<string, string>[]) {
                 const tempId = Math.random().toString(36).substr(2, 9);
 
                 try {
@@ -184,20 +179,39 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
                         }
                     }
 
-                    // Smart Mapping: Subject
-                    let subject = (row["Сэдэв"] || row.Subject || row.subject || "").toString().trim();
-                    // If it's not a valid ID (assuming IDs don't have spaces and are usually lowercase/alphanumeric)
-                    // we try to find a subect with matching name
-                    const foundSubject = allSubjects.find(s =>
-                        s.id === subject ||
-                        s.name.toLowerCase() === subject.toLowerCase() ||
-                        s.name.toLowerCase().includes(subject.toLowerCase())
-                    );
-                    if (foundSubject) {
-                        subject = foundSubject.id;
-                        // If grade was empty, we can infer it from subject if possible
-                        if (!grade && foundSubject.gradeId) grade = foundSubject.gradeId;
+                    // Smart Mapping: Lesson & Subject
+                    const lessonStr = (row["Хичээл"] || row.Lesson || row.lesson || "").toString().trim();
+                    const subjectStr = (row["Сэдэв"] || row.Subject || row.subject || "").toString().trim();
+                    let lessonId = "";
+                    let subjectId = "";
+
+                    if (lessonStr) {
+                        const matchedLesson = allLessons.find(l => l.name.toLowerCase() === lessonStr.toLowerCase());
+                        if (!matchedLesson) throw new Error(`Бүртгэлгүй хичээл: "${lessonStr}"`);
+                        lessonId = matchedLesson.id;
+
+                        if (subjectStr) {
+                            const subsOfLesson = allSubjects.filter(s => s.lessonId === lessonId);
+                            const matchSub = subsOfLesson.find(s => s.name.toLowerCase() === subjectStr.toLowerCase());
+                            if (!matchSub) throw new Error(`"${matchedLesson.name}" хичээлд "${subjectStr}" гэсэн сэдэв олдсонгүй`);
+                            subjectId = matchSub.id;
+                            if (!grade && matchSub.gradeId) grade = matchSub.gradeId;
+                        }
+                    } else if (subjectStr) {
+                        // Fallback: search subject globally if specific lesson empty
+                        const foundSubject = allSubjects.find(s =>
+                            s.id === subjectStr ||
+                            s.name.toLowerCase() === subjectStr.toLowerCase() ||
+                            s.name.toLowerCase().includes(subjectStr.toLowerCase())
+                        );
+                        if (foundSubject) {
+                            subjectId = foundSubject.id;
+                            lessonId = foundSubject.lessonId || "";
+                            if (!grade && foundSubject.gradeId) grade = foundSubject.gradeId;
+                        }
                     }
+
+                    if (!subjectId) throw new Error(`Сэдэв олдсонгүй: "${subjectStr || 'хоосон'}"`);
 
                     const solutionText = (row["Бодолт"] || row.Solution || row.solution || "").trim();
 
@@ -314,7 +328,8 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
                         correctAnswer,
                         points,
                         grade,
-                        subject,
+                        lesson: lessonId,
+                        subject: subjectId,
                         solution: solutionText,
                         mediaType: imageFile ? "image" : undefined,
                         solutionMediaType: solutionImageFile ? "image" : undefined,
@@ -324,9 +339,9 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
                         solutionImagePreview,
                         ...(optionImageFiles.length > 0 ? { _optionImageFiles: optionImageFiles } : {}),
                         createdBy: user?.uid || ""
-                    } as any);
+                    } as unknown as PendingQuestion);
 
-                } catch (err: any) {
+                } catch (err: unknown) {
                     // Catch validation or processing errors for this specific row
                     console.error(`Row processing error:`, err);
                     newPending.push({
@@ -338,11 +353,12 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
                         correctAnswer: row["Зөв хариулт"] || "",
                         points: 1,
                         grade: row["Анги"] || "",
+                        lesson: row["Хичээл"] || "",
                         subject: row["Сэдэв"] || "",
                         solution: row["Бодолт"] || "",
-                        error: err.message || "Мэдээлэл боловсруулахад алдаа гарлаа",
+                        error: (err instanceof Error) ? err.message : "Мэдээлэл боловсруулахад алдаа гарлаа",
                         createdBy: user?.uid || ""
-                    } as any);
+                    } as unknown as PendingQuestion);
                 }
             }
 
@@ -382,7 +398,6 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
         setProgress({ current: 0, total: validQuestions.length });
 
         try {
-            const finalQuestions: Omit<Question, "id">[] = [];
             const CONCURRENCY = 5;
             const chunks = [];
 
@@ -429,6 +444,7 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
 
                         // Handle Option Images
                         const optionImages = [...(q.optionImages || [])];
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
                         const optionImageFiles = (q as any)._optionImageFiles as (File | undefined)[] || [];
 
                         for (let i = 0; i < optionImageFiles.length; i++) {
@@ -438,7 +454,8 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
                             }
                         }
 
-                        const { tempId, imageFile, solutionImageFile, imagePreview, solutionImagePreview, error, _optionImageFiles, ...questionData } = q as any;
+                        // eslint-disable-next-line @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any
+                        const { tempId, lesson, imageFile, solutionImageFile, imagePreview, solutionImagePreview, error, _optionImageFiles, ...questionData } = q as any;
                         return {
                             ...questionData,
                             mediaUrl,
@@ -449,18 +466,18 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
                     }));
 
                     // Save this chunk
-                    await QuestionService.createQuestionsBatch(results as any);
+                    await QuestionService.createQuestionsBatch(results as Omit<Question, "id">[]);
 
                     // Success: remove these from pending immediately
-                    const savedIds = chunk.map(c => (c as any).tempId);
+                    const savedIds = chunk.map(c => c.tempId);
                     setPendingQuestions(prev => prev.filter(p => !savedIds.includes(p.tempId)));
 
                     processedCount += chunk.length;
                     setProgress({ current: processedCount, total: validQuestions.length });
-                } catch (chunkError: any) {
+                } catch (chunkError: unknown) {
                     console.error("Chunk save error:", chunkError);
                     // Mark items in this chunk as failed
-                    const chunkIds = chunk.map(c => (c as any).tempId);
+                    const chunkIds = chunk.map(c => c.tempId);
                     setPendingQuestions(prev => prev.map(p =>
                         chunkIds.includes(p.tempId)
                             ? { ...p, error: "Хадгалахад алдаа гарлаа. Дахин оролдоно уу." }
@@ -662,6 +679,7 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
                                                                 </div>
                                                                 {q.optionImages?.[optIdx] && (
                                                                     <div className="w-9 h-9 border border-slate-200 rounded overflow-hidden shrink-0">
+                                                                        {/* eslint-disable-next-line @next/next/no-img-element */}
                                                                         <img src={q.optionImages[optIdx]} className="w-full h-full object-cover" alt="Option" />
                                                                     </div>
                                                                 )}
@@ -680,7 +698,7 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
                                                 />
                                             </div>
 
-                                            <div className="grid grid-cols-2 gap-4">
+                                            <div className="grid grid-cols-3 gap-4">
                                                 <div>
                                                     <label className="text-[10px] font-bold text-slate-400 uppercase">Анги</label>
                                                     <Select
@@ -695,14 +713,28 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
                                                     </Select>
                                                 </div>
                                                 <div>
+                                                    <label className="text-[10px] font-bold text-slate-400 uppercase">Хичээл</label>
+                                                    <Select
+                                                        value={q.lesson || ""}
+                                                        onChange={(e) => updateQuestion(q.tempId, { lesson: e.target.value, subject: "" })}
+                                                        className="text-xs h-9"
+                                                    >
+                                                        <option value="">Сонгох...</option>
+                                                        {allLessons.map(l => (
+                                                            <option key={l.id} value={l.id}>{l.name}</option>
+                                                        ))}
+                                                    </Select>
+                                                </div>
+                                                <div>
                                                     <label className="text-[10px] font-bold text-slate-400 uppercase">Сэдэв</label>
                                                     <Select
                                                         value={q.subject}
                                                         onChange={(e) => updateQuestion(q.tempId, { subject: e.target.value })}
                                                         className="text-xs h-9"
+                                                        disabled={!q.lesson}
                                                     >
                                                         <option value="">Сонгох...</option>
-                                                        {allSubjects.filter(s => !q.grade || s.gradeId === q.grade).map(s => (
+                                                        {allSubjects.filter(s => s.lessonId === q.lesson && (!q.grade || s.gradeId === q.grade)).map(s => (
                                                             <option key={s.id} value={s.id}>{s.name}</option>
                                                         ))}
                                                     </Select>
@@ -729,7 +761,7 @@ export function BulkQuestionUpload({ allSubjects, onComplete }: BulkQuestionUplo
                                                         mediaUrl: q.imagePreview,
                                                         solutionMediaUrl: q.solutionImagePreview
                                                     }}
-                                                    className="!rounded-xl border-dashed"
+                                                    className="rounded-xl! border-dashed"
                                                 />
                                             </div>
                                         </div>

@@ -22,14 +22,26 @@ export interface SelectProps {
     required?: boolean;
 }
 
-const Select = React.forwardRef<HTMLDivElement, SelectProps>(
-    ({ className, label, error, value: propsValue, defaultValue, onChange, options: propsOptions, children, placeholder = "Сонгох...", disabled, required, ...props }, ref) => {
+const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
+    ({ className, label, error, value: propsValue, defaultValue, onChange, options: propsOptions, children, placeholder = "Сонгох...", disabled }, ref) => {
         const [isOpen, setIsOpen] = React.useState(false);
         const [internalValue, setInternalValue] = React.useState(propsValue || defaultValue || "");
         const [coords, setCoords] = React.useState({ top: 0, left: 0, width: 0 });
         const containerRef = React.useRef<HTMLDivElement>(null);
         const triggerRef = React.useRef<HTMLButtonElement>(null);
         const popoverRef = React.useRef<HTMLDivElement>(null);
+
+        const setRefs = React.useCallback(
+            (node: HTMLButtonElement | null) => {
+                triggerRef.current = node;
+                if (typeof ref === "function") {
+                    ref(node);
+                } else if (ref) {
+                    ref.current = node;
+                }
+            },
+            [ref]
+        );
 
         // Sync internal value
         React.useEffect(() => {
@@ -43,7 +55,7 @@ const Select = React.forwardRef<HTMLDivElement, SelectProps>(
             const extracted: SelectOption[] = [];
             React.Children.forEach(children, (child) => {
                 if (React.isValidElement(child) && child.type === "option") {
-                    const p = child.props as any;
+                    const p = child.props as { value: string, children: React.ReactNode };
                     extracted.push({ value: String(p.value), label: String(p.children) });
                 }
             });
@@ -91,7 +103,7 @@ const Select = React.forwardRef<HTMLDivElement, SelectProps>(
         }, []);
 
         const handleSelect = (val: string) => {
-            if (onChange) onChange({ target: { value: val } } as any);
+            if (onChange) onChange({ target: { value: val } });
             setIsOpen(false);
         };
 
@@ -104,7 +116,7 @@ const Select = React.forwardRef<HTMLDivElement, SelectProps>(
                 )}
                 <div className="relative">
                     <button
-                        ref={triggerRef}
+                        ref={setRefs}
                         type="button"
                         disabled={disabled}
                         onClick={() => {
@@ -129,7 +141,7 @@ const Select = React.forwardRef<HTMLDivElement, SelectProps>(
                     {isOpen && coords.width > 0 && typeof document !== "undefined" && createPortal(
                         <div
                             ref={popoverRef}
-                            className="absolute z-[9999] bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200"
+                            className="absolute z-9999 bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200"
                             style={{
                                 top: coords.top + 8,
                                 left: coords.left,

@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useRef } from "react";
 import { SettingsService } from "@/lib/services/settings-service";
-import { Grade, Subject } from "@/types";
+
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
@@ -12,6 +12,7 @@ import { Trash2, Plus, ArrowLeft, Download, Upload, Save, X } from "lucide-react
 import Link from "next/link";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useConfirm } from "@/components/providers/ModalProvider";
 
 const GRADES_MAP: Record<string, string> = {
     "1": "1-р анги", "2": "2-р анги", "3": "3-р анги", "4": "4-р анги",
@@ -29,6 +30,7 @@ interface PendingSubject {
 
 export default function AdminSubjectsPage() {
     const queryClient = useQueryClient();
+    const confirm = useConfirm();
     const { data: subjects = [], isLoading: loading } = useQuery({
         queryKey: ["subjects"],
         queryFn: () => SettingsService.getSubjects(),
@@ -39,6 +41,7 @@ export default function AdminSubjectsPage() {
     const [newName, setNewName] = useState("");
     const [selectedGradeId, setSelectedGradeId] = useState("1");
     const [filterGradeId, setFilterGradeId] = useState("all");
+    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
     // CSV Bulk Upload State
     const [pendingSubjects, setPendingSubjects] = useState<PendingSubject[]>([]);
@@ -55,19 +58,44 @@ export default function AdminSubjectsPage() {
             setNewName("");
             queryClient.invalidateQueries({ queryKey: ["subjects"] });
             toast.success("Сэдэв амжилттай нэмэгдлээ");
-        } catch (error) {
+        } catch {
             toast.error("Алдаа гарлаа");
         }
     };
 
     const handleDelete = async (id: string) => {
-        if (!confirm("Та устгахдаа итгэлтэй байна уу?")) return;
+        const confirmed = await confirm({
+            title: "Устгахыг баталгаажуулах",
+            message: "Та энэ сэдвийг устгахдаа итгэлтэй байна уу?",
+            confirmLabel: "Устгах",
+            variant: "destructive"
+        });
+        if (!confirmed) return;
         try {
             await SettingsService.deleteSubject(id);
             queryClient.invalidateQueries({ queryKey: ["subjects"] });
             toast.success("Устгагдлаа");
-        } catch (error) {
+        } catch {
             toast.error("Устгахад алдаа гарлаа");
+        }
+    };
+
+    const handleBulkDelete = async () => {
+        if (selectedIds.size === 0) return;
+        const confirmed = await confirm({
+            title: "Бөөнөөр устгах",
+            message: `Та сонгосон ${selectedIds.size} сэдвийг устгахдаа итгэлтэй байна уу? Энэ үйлдлийг буцаах боломжгүй.`,
+            confirmLabel: "Устгах",
+            variant: "destructive"
+        });
+        if (!confirmed) return;
+        try {
+            await SettingsService.deleteSubjectsBatch(Array.from(selectedIds));
+            setSelectedIds(new Set());
+            queryClient.invalidateQueries({ queryKey: ["subjects"] });
+            toast.success("Сонгосон сэдвүүдийг устгалаа");
+        } catch {
+            toast.error("Сэдвүүдийг устгахад алдаа гарлаа");
         }
     };
 
@@ -134,7 +162,7 @@ export default function AdminSubjectsPage() {
             toast.success(`${pendingSubjects.length} сэдэв амжилттай хадгалагдлаа`);
             setPendingSubjects([]);
             queryClient.invalidateQueries({ queryKey: ["subjects"] });
-        } catch (error) {
+        } catch {
             toast.error("Бөөнөөр хадгалахад алдаа гарлаа");
         } finally {
             setSaving(false);
@@ -145,6 +173,23 @@ export default function AdminSubjectsPage() {
         ? subjects
         : subjects.filter(s => s.gradeId === filterGradeId);
 
+    const isAllSelected = displaySubjects.length > 0 && displaySubjects.every(s => selectedIds.has(s.id));
+
+    const toggleSelectAll = () => {
+        if (isAllSelected) {
+            setSelectedIds(new Set());
+        } else {
+            setSelectedIds(new Set(displaySubjects.map(s => s.id)));
+        }
+    };
+
+    const toggleSelect = (id: string) => {
+        const next = new Set(selectedIds);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        setSelectedIds(next);
+    };
+
     return (
         <div className="max-w-5xl mx-auto space-y-8 pb-10">
             <div className="flex items-center justify-between">
@@ -154,7 +199,7 @@ export default function AdminSubjectsPage() {
                             <ArrowLeft className="w-5 h-5 text-slate-600" />
                         </button>
                     </Link>
-                    <h1 className="text-3xl font-bold text-slate-900">Сэдвүүд удирдах</h1>
+                    <h1 className="text-xl font-bold text-slate-900">Сэдвүүд удирдах</h1>
                 </div>
                 <Button variant="outline" onClick={downloadTemplate} className="gap-2">
                     <Download className="w-4 h-4" />
@@ -290,8 +335,21 @@ export default function AdminSubjectsPage() {
 
                     <Card>
                         <CardHeader>
-                            <div className="flex justify-between items-center">
-                                <CardTitle>Бүртгэлтэй сэдвүүд</CardTitle>
+                            <div className="flex justify-between items-center flex-wrap gap-4">
+                                <div className="flex items-center gap-4">
+                                    <CardTitle>Бүртгэлтэй сэдвүүд</CardTitle>
+                                    {selectedIds.size > 0 && (
+                                        <Button 
+                                            variant="destructive" 
+                                            size="sm" 
+                                            onClick={handleBulkDelete}
+                                            className="h-8 text-xs font-semibold"
+                                        >
+                                            <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                                            Сонгосон {selectedIds.size} устгах
+                                        </Button>
+                                    )}
+                                </div>
                                 <div className="w-40">
                                     <Select
                                         value={filterGradeId}
@@ -308,27 +366,48 @@ export default function AdminSubjectsPage() {
                         </CardHeader>
                         <CardContent>
                             <div className="divide-y divide-slate-100">
-                                {loading ? (
+                                {loading && (
                                     <div className="py-8 text-center text-slate-500">Ачаалж байна...</div>
-                                ) : displaySubjects.length === 0 ? (
+                                )}
+                                {!loading && displaySubjects.length === 0 && (
                                     <div className="py-8 text-center text-slate-500 italic">Сэдэв олдсонгүй</div>
-                                ) : (
-                                    displaySubjects.map((s) => (
-                                        <div key={s.id} className="py-3 flex justify-between items-center group">
-                                            <div>
-                                                <div className="font-semibold text-slate-900">{s.name}</div>
-                                                <div className="text-[10px] inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-600 mt-1 uppercase font-bold tracking-tight">
-                                                    {GRADES_MAP[s.gradeId || ""] || "Бүгд"}
-                                                </div>
-                                            </div>
-                                            <button
-                                                onClick={() => handleDelete(s.id)}
-                                                className="p-2 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-lg opacity-0 group-hover:opacity-100 transition-all"
-                                            >
-                                                <Trash2 className="w-4 h-4" />
-                                            </button>
+                                )}
+                                {!loading && displaySubjects.length > 0 && (
+                                    <>
+                                        <div className="py-3 flex items-center gap-3">
+                                            <input 
+                                                type="checkbox" 
+                                                checked={isAllSelected}
+                                                onChange={toggleSelectAll}
+                                                className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                            />
+                                            <label className="text-xs font-bold text-slate-600 select-none cursor-pointer" onClick={toggleSelectAll}>Бүгдийг сонгох</label>
                                         </div>
-                                    ))
+                                        {displaySubjects.map((s) => (
+                                            <div key={s.id} className="py-3 flex justify-between items-center group">
+                                                <div className="flex items-center gap-3">
+                                                    <input 
+                                                        type="checkbox" 
+                                                        checked={selectedIds.has(s.id)}
+                                                        onChange={() => toggleSelect(s.id)}
+                                                        className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                                    />
+                                                    <div>
+                                                        <div className="font-semibold text-slate-900">{s.name}</div>
+                                                        <div className="text-[10px] inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-600 mt-1 uppercase font-bold tracking-tight">
+                                                            {GRADES_MAP[s.gradeId || ""] || "Бүгд"}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <button
+                                                    onClick={() => handleDelete(s.id)}
+                                                    className="p-2 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-lg opacity-0 group-hover:opacity-100 transition-all"
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </>
                                 )}
                             </div>
                         </CardContent>

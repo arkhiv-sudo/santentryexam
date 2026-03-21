@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { ExamService } from "@/lib/services/exam-service";
+import { QuestionService } from "@/lib/services/question-service";
 import { SettingsService } from "@/lib/services/settings-service";
 import { useAuth } from "@/components/AuthProvider";
 import { Button } from "@/components/ui/Button";
@@ -10,7 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { toast } from "sonner";
-import { ArrowLeft, Save, Calendar, Clock, GraduationCap, ListOrdered, ChevronRight, ChevronLeft, BookOpen } from "lucide-react";
+import { ArrowLeft, Save, Calendar, Clock, GraduationCap, ListOrdered, ChevronRight, ChevronLeft, BookOpen, AlertCircle } from "lucide-react";
 import Link from "next/link";
 import { Exam, Subject } from "@/types";
 
@@ -31,6 +32,7 @@ export default function EditExamPage() {
     const [step, setStep] = useState(1);
     const [subjects, setSubjects] = useState<Subject[]>([]);
     const [loadingSubjects, setLoadingSubjects] = useState(false);
+    const [initialStatus, setInitialStatus] = useState<Exam["status"]>("draft");
 
     const [formData, setFormData] = useState({
         title: "",
@@ -39,10 +41,12 @@ export default function EditExamPage() {
         duration: "60",
         grade: "",
         maxQuestions: "30",
+        passingScore: "0",
         status: "draft" as Exam["status"]
     });
 
     const [distribution, setDistribution] = useState<Record<string, number>>({});
+    const [availableCounts, setAvailableCounts] = useState<Record<string, number>>({});
 
     useEffect(() => {
         if (!authLoading) {
@@ -52,6 +56,7 @@ export default function EditExamPage() {
                 loadExam();
             }
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [profile, authLoading, router, id]);
 
     const loadExam = async () => {
@@ -62,6 +67,7 @@ export default function EditExamPage() {
                 router.push("/admin/exams");
                 return;
             }
+            setInitialStatus(exam.status);
 
             // Format dates for datetime-local input (YYYY-MM-DDTHH:mm)
             const formatDate = (date: Date) => {
@@ -77,6 +83,7 @@ export default function EditExamPage() {
                 duration: exam.duration.toString(),
                 grade: exam.grade,
                 maxQuestions: exam.maxQuestions.toString(),
+                passingScore: (exam.passingScore ?? 0).toString(),
                 status: exam.status
             });
 
@@ -92,6 +99,11 @@ export default function EditExamPage() {
             // Also pre-fetch subjects for the grade to be ready
             const subData = await SettingsService.getSubjects(exam.grade);
             setSubjects(subData);
+
+            // Fetch question counts
+            const subjectIds = subData.map(s => s.id);
+            const counts = await QuestionService.getQuestionCounts(exam.grade, subjectIds);
+            setAvailableCounts(counts);
 
         } catch (error) {
             console.error("Failed to load exam", error);
@@ -110,8 +122,8 @@ export default function EditExamPage() {
         const scheduledDate = new Date(formData.scheduledAt);
         const regEndDate = new Date(formData.registrationEndDate);
 
-        if (regEndDate > scheduledDate) {
-            toast.error("Бүртгэл дуусах огноо шалгалт эхлэх огнооноос хойш байж болохгүй");
+        if (regEndDate >= scheduledDate) {
+            toast.error("Бүртгэл дуусах огноо шалгалт эхлэх огнооноос өмнө байх ёстой");
             return;
         }
 
@@ -119,6 +131,11 @@ export default function EditExamPage() {
         try {
             const data = await SettingsService.getSubjects(formData.grade);
             setSubjects(data);
+
+            // Fetch question counts for these subjects
+            const subjectIds = data.map(s => s.id);
+            const counts = await QuestionService.getQuestionCounts(formData.grade, subjectIds);
+            setAvailableCounts(counts);
 
             // Sync distribution with new subjects list (preserve existing counts)
             const newDist: Record<string, number> = { ...distribution };
@@ -129,7 +146,8 @@ export default function EditExamPage() {
 
             setStep(2);
         } catch (error) {
-            toast.error("Сэдвүүдийг ачаалахад алдаа гарлаа");
+            console.error("Failed to load step 2 data:", error);
+            toast.error("Мэдээллийг ачаалахад алдаа гарлаа");
         } finally {
             setLoadingSubjects(false);
         }
@@ -145,10 +163,21 @@ export default function EditExamPage() {
             return;
         }
 
+        const hasOverRequested = subjects.some(s => {
+            const count = distribution[s.id] || 0;
+            const available = availableCounts[s.id] || 0;
+            return count > available;
+        });
+
+        if (hasOverRequested) {
+            toast.error("Санд байгаа асуултын тооноос их асуулт сонгох боломжгүй!");
+            return;
+        }
+
         setSaving(true);
         try {
             const subjectDistribution = Object.entries(distribution)
-                .filter(([_, count]) => count > 0)
+                .filter(([, count]) => count > 0)
                 .map(([subjectId, count]) => ({ subjectId, count }));
 
             await ExamService.updateExam(id, {
@@ -158,6 +187,7 @@ export default function EditExamPage() {
                 duration: parseInt(formData.duration),
                 grade: formData.grade,
                 maxQuestions: parseInt(formData.maxQuestions),
+                passingScore: parseInt(formData.passingScore),
                 status: formData.status,
                 subjectDistribution
             });
@@ -172,6 +202,8 @@ export default function EditExamPage() {
     };
 
     if (authLoading || loading) return <div className="p-8 text-center text-slate-500">Уншиж байна...</div>;
+
+    const isPublished = initialStatus === "published";
 
     return (
         <div className="max-w-4xl mx-auto space-y-6">
@@ -194,6 +226,16 @@ export default function EditExamPage() {
                 </div>
             </div>
 
+            {isPublished && (
+                <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl flex items-center gap-3 mt-4">
+                    <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+                    <div>
+                        <strong className="font-bold text-sm">Шалгалт нийтлэгдсэн байна!</strong>
+                        <p className="text-xs mt-0.5">Сурагчид шалгалтыг харж, эхлүүлсэн байж болзошгүй тул мэдээллийг засах боломжгүй.</p>
+                    </div>
+                </div>
+            )}
+
             {step === 1 ? (
                 <div className="space-y-6">
                     <Card className="border-slate-200 shadow-sm overflow-hidden">
@@ -210,6 +252,7 @@ export default function EditExamPage() {
                                     placeholder="Жишээ: 2024 оны математикийн олимпиад"
                                     value={formData.title}
                                     onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                                    disabled={isPublished}
                                 />
                             </div>
 
@@ -223,6 +266,7 @@ export default function EditExamPage() {
                                         type="datetime-local"
                                         value={formData.scheduledAt}
                                         onChange={(e) => setFormData({ ...formData, scheduledAt: e.target.value })}
+                                        disabled={isPublished}
                                     />
                                 </div>
                                 <div className="space-y-2">
@@ -234,18 +278,20 @@ export default function EditExamPage() {
                                         type="datetime-local"
                                         value={formData.registrationEndDate}
                                         onChange={(e) => setFormData({ ...formData, registrationEndDate: e.target.value })}
+                                        disabled={isPublished}
                                     />
                                 </div>
                             </div>
 
-                            <div className="grid md:grid-cols-3 gap-6">
+                            <div className="grid md:grid-cols-4 gap-6">
                                 <div className="space-y-2">
-                                    <label className="text-sm font-semibold text-slate-700">Үргэлжлэх хугацаа (минут)</label>
+                                    <label className="text-sm font-semibold text-slate-700">Хугацаа (минут)</label>
                                     <Input
                                         type="number"
                                         min="1"
                                         value={formData.duration}
                                         onChange={(e) => setFormData({ ...formData, duration: e.target.value })}
+                                        disabled={isPublished}
                                     />
                                 </div>
                                 <div className="space-y-2">
@@ -256,6 +302,7 @@ export default function EditExamPage() {
                                     <Select
                                         value={formData.grade}
                                         onChange={(e) => setFormData({ ...formData, grade: e.target.value })}
+                                        disabled={isPublished}
                                     >
                                         <option value="">Сонгох...</option>
                                         {GRADES_LIST.map(g => (
@@ -264,12 +311,23 @@ export default function EditExamPage() {
                                     </Select>
                                 </div>
                                 <div className="space-y-2">
-                                    <label className="text-sm font-semibold text-slate-700">Нийт асуултын тоо</label>
+                                    <label className="text-sm font-semibold text-slate-700">Нийт асуулт</label>
                                     <Input
                                         type="number"
                                         min="1"
                                         value={formData.maxQuestions}
                                         onChange={(e) => setFormData({ ...formData, maxQuestions: e.target.value })}
+                                        disabled={isPublished}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-semibold text-slate-700">Босго оноо</label>
+                                    <Input
+                                        type="number"
+                                        min="0"
+                                        value={formData.passingScore}
+                                        onChange={(e) => setFormData({ ...formData, passingScore: e.target.value })}
+                                        disabled={isPublished}
                                     />
                                 </div>
                             </div>
@@ -279,6 +337,7 @@ export default function EditExamPage() {
                                 <Select
                                     value={formData.status}
                                     onChange={(e) => setFormData({ ...formData, status: e.target.value as Exam["status"] })}
+                                    disabled={isPublished}
                                 >
                                     <option value="draft">Ноорог (Draft)</option>
                                     <option value="published">Нийтлэх (Published)</option>
@@ -294,7 +353,7 @@ export default function EditExamPage() {
                         </Link>
                         <Button
                             onClick={handleNextStep}
-                            disabled={loadingSubjects}
+                            disabled={loadingSubjects || (isPublished && formData.grade !== "")} // If published, probably stop them, but actually they can just view step 2. Let's just allow viewing.
                             className="bg-blue-600 text-white hover:bg-blue-700 gap-2"
                         >
                             {loadingSubjects ? "Уншиж байна..." : (
@@ -323,23 +382,46 @@ export default function EditExamPage() {
                                 {subjects.length === 0 ? (
                                     <div className="p-8 text-center text-slate-500 italic">Сэдэв олдсонгүй. Энэ ангид сэдэв бүртгэгдээгүй байна.</div>
                                 ) : (
-                                    subjects.map((s) => (
-                                        <div key={s.id} className="p-4 flex items-center justify-between hover:bg-slate-50/50 transition-colors">
-                                            <div className="font-medium text-slate-700">{s.name}</div>
-                                            <div className="w-24">
-                                                <Input
-                                                    type="number"
-                                                    min="0"
-                                                    value={distribution[s.id] || 0}
-                                                    onChange={(e) => setDistribution({
-                                                        ...distribution,
-                                                        [s.id]: parseInt(e.target.value) || 0
-                                                    })}
-                                                    className="h-8 text-center"
-                                                />
+                                    subjects.map((s) => {
+                                        const count = distribution[s.id] || 0;
+                                        const available = availableCounts[s.id] || 0;
+                                        const deficit = count > available ? count - available : 0;
+
+                                        return (
+                                            <div key={s.id} className="p-4 flex items-center justify-between hover:bg-slate-50/50 transition-colors">
+                                                <div className="flex flex-col">
+                                                    <div className="font-medium text-slate-700">{s.name}</div>
+                                                    <div className="flex items-center gap-2 mt-1">
+                                                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                                                            Санд байгаа: {available}
+                                                        </span>
+                                                        {deficit > 0 ? (
+                                                            <span className="text-[10px] bg-red-50 text-red-900 px-1.5 py-0.5 rounded font-bold border border-red-100">
+                                                                {deficit} асуулт дутуу
+                                                            </span>
+                                                        ) : count > 0 && (
+                                                            <span className="text-[10px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded font-bold border border-emerald-100">
+                                                                Бүрэн
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                <div className="w-24">
+                                                    <Input
+                                                        type="number"
+                                                        min="0"
+                                                        value={count}
+                                                        onChange={(e) => setDistribution({
+                                                            ...distribution,
+                                                            [s.id]: parseInt(e.target.value) || 0
+                                                        })}
+                                                        disabled={isPublished}
+                                                        className={`h-8 text-center font-bold ${deficit > 0 ? 'border-red-300 text-red-600 focus:ring-red-500' : ''}`}
+                                                    />
+                                                </div>
                                             </div>
-                                        </div>
-                                    ))
+                                        );
+                                    })
                                 )}
                             </div>
                         </CardContent>
@@ -352,7 +434,7 @@ export default function EditExamPage() {
                         </Button>
                         <Button
                             onClick={handleSubmit}
-                            disabled={saving || totalAssigned > parseInt(formData.maxQuestions)}
+                            disabled={saving || totalAssigned > parseInt(formData.maxQuestions) || isPublished}
                             className="bg-blue-600 text-white hover:bg-blue-700 gap-2"
                         >
                             {saving ? "Хадгалж байна..." : (
