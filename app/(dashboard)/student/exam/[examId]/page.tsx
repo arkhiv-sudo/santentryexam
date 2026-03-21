@@ -53,6 +53,7 @@ export default function ExamPage() {
     const submittedRef = useRef(false);
     const startedRef = useRef(false);
     const answersRef = useRef(answers);
+    const handleSubmitRef = useRef<() => void>(() => {});
     // ✅ OPTIMIZATION: track last-saved snapshot so we skip the Firestore write
     // when the student hasn't changed any answer since the previous autosave.
     const lastSavedAnswersRef = useRef<string>("");
@@ -201,32 +202,37 @@ export default function ExamPage() {
         }
     }, [user, profile, examId, answers, timeLeft, meta]);
 
+    // Keep ref in sync with the latest handleSubmit so timer never calls stale version
+    useEffect(() => { handleSubmitRef.current = handleSubmit; }, [handleSubmit]);
+
     // ── Countdown timer ────────────────────────────────────────────────────
     useEffect(() => {
         if (!started || submittedRef.current || !meta) return;
         if (timeLeft <= 0) {
             toast.error("Хугацаа дууслаа! Шалгалт автоматаар илгээгдлээ.");
-            handleSubmit();
+            handleSubmitRef.current();
             return;
         }
 
         const examEndMs = meta.scheduledAt + meta.duration * 60_000;
-        
+
         const timer = setInterval(() => {
             const remaining = Math.floor((examEndMs - getServerTimeValue()) / 1000);
             if (remaining <= 0) {
                 clearInterval(timer);
                 setTimeLeft(0);
-                toast.error("Хугацаа дууслаа! Шалгалт автоматаар илгээгдлээ.");
-                handleSubmit();
+                if (!submittedRef.current) {
+                    toast.error("Хугацаа дууслаа! Шалгалт автоматаар илгээгдлээ.");
+                    handleSubmitRef.current();
+                }
             } else {
                 setTimeLeft(remaining);
             }
         }, 1000);
-        
+
         return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [started, meta, handleSubmit]);
+    }, [started, meta]); // ✅ removed handleSubmit dependency — using ref instead
     
     // ── 15s Preload Countdown ──────────────────────────────────────────────
     useEffect(() => {
