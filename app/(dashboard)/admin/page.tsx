@@ -91,6 +91,24 @@ export default function AdminDashboard() {
             iconColor: "text-purple-600"
         },
         {
+            title: "Хичээлүүд удирдах",
+            description: "Хичээл нэмэх, устгах",
+            icon: BookOpen,
+            href: "/admin/settings/lessons",
+            gradient: "from-violet-500 to-purple-500",
+            iconBg: "bg-violet-100",
+            iconColor: "text-violet-600"
+        },
+        {
+            title: "Сэдвүүд удирдах",
+            description: "Хичээлтэй холбоотой сэдвүүдийг нэмэх, устгах, CSV оруулах",
+            icon: Award,
+            href: "/admin/settings/subjects",
+            gradient: "from-emerald-500 to-teal-500",
+            iconBg: "bg-emerald-100",
+            iconColor: "text-emerald-600"
+        },
+        {
             title: "Системийн тохиргоо",
             description: "Ерөнхий тохиргоо болон параметрүүд",
             icon: Settings,

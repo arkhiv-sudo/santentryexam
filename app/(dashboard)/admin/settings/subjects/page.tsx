@@ -8,7 +8,7 @@ import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { toast } from "sonner";
-import { Trash2, Plus, ArrowLeft, Download, Upload, Save, X } from "lucide-react";
+import { Trash2, Plus, ArrowLeft, Download, Upload, Save, X, BookOpen } from "lucide-react";
 import Link from "next/link";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -26,26 +26,38 @@ interface PendingSubject {
     tempId: string;
     name: string;
     gradeId: string;
+    lessonId: string;
 }
 
 export default function AdminSubjectsPage() {
     const queryClient = useQueryClient();
     const confirm = useConfirm();
+
     const { data: subjects = [], isLoading: loading } = useQuery({
         queryKey: ["subjects"],
         queryFn: () => SettingsService.getSubjects(),
-        staleTime: 60 * 60 * 1000, // 1 hour
+        staleTime: 60 * 60 * 1000,
+    });
+
+    const { data: lessons = [] } = useQuery({
+        queryKey: ["lessons"],
+        queryFn: () => SettingsService.getLessons(),
+        staleTime: 60 * 60 * 1000,
     });
 
     const [saving, setSaving] = useState(false);
     const [newName, setNewName] = useState("");
     const [selectedGradeId, setSelectedGradeId] = useState("1");
+    const [selectedLessonId, setSelectedLessonId] = useState("");
     const [filterGradeId, setFilterGradeId] = useState("all");
+    const [filterLessonId, setFilterLessonId] = useState("all");
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
     // CSV Bulk Upload State
     const [pendingSubjects, setPendingSubjects] = useState<PendingSubject[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const lessonsMap = Object.fromEntries(lessons.map(l => [l.id, l.name]));
 
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -54,7 +66,7 @@ export default function AdminSubjectsPage() {
             return;
         }
         try {
-            await SettingsService.createSubject(newName, selectedGradeId);
+            await SettingsService.createSubject(newName, selectedGradeId, selectedLessonId || undefined);
             setNewName("");
             queryClient.invalidateQueries({ queryKey: ["subjects"] });
             toast.success("Сэдэв амжилттай нэмэгдлээ");
@@ -84,7 +96,7 @@ export default function AdminSubjectsPage() {
         if (selectedIds.size === 0) return;
         const confirmed = await confirm({
             title: "Бөөнөөр устгах",
-            message: `Та сонгосон ${selectedIds.size} сэдвийг устгахдаа итгэлтэй байна уу? Энэ үйлдлийг буцаах боломжгүй.`,
+            message: `Та сонгосон ${selectedIds.size} сэдвийг устгахдаа итгэлтэй байна уу?`,
             confirmLabel: "Устгах",
             variant: "destructive"
         });
@@ -101,8 +113,9 @@ export default function AdminSubjectsPage() {
 
     // CSV Logic
     const downloadTemplate = () => {
-        const headers = "Сэдэв,Анги";
-        const rows = "Жишээ сэдэв 1,1\nЖишээ сэдэв 2,5";
+        const lessonNames = lessons.map(l => l.name).join(" / ") || "Математик";
+        const headers = "Хичээл,Сэдэв,Анги";
+        const rows = `${lessonNames.split("/")[0].trim()},Жишээ сэдэв 1,6\n${lessonNames.split("/")[0].trim()},Жишээ сэдэв 2,7`;
         const csvContent = "\uFEFF" + headers + "\n" + rows;
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement("a");
@@ -125,16 +138,25 @@ export default function AdminSubjectsPage() {
             const lines = text.split("\n").filter(line => line.trim());
             const newPending: PendingSubject[] = [];
 
-            // Skip header
+            // Skip header row
             for (let i = 1; i < lines.length; i++) {
-                const [name, gradeId] = lines[i].split(",").map(s => s.trim());
-                if (name && gradeId) {
-                    newPending.push({
-                        tempId: Math.random().toString(36).substr(2, 9),
-                        name,
-                        gradeId
-                    });
+                const parts = lines[i].split(",").map(s => s.trim().replace(/^\uFEFF/, ""));
+                let lessonName = "", name = "", gradeId = "";
+                if (parts.length === 3) {
+                    [lessonName, name, gradeId] = parts;
+                } else if (parts.length === 2) {
+                    [name, gradeId] = parts;
                 }
+                if (!name || !gradeId) continue;
+
+                // Match lesson by name
+                const matchedLesson = lessons.find(l => l.name.toLowerCase() === lessonName.toLowerCase());
+                newPending.push({
+                    tempId: Math.random().toString(36).substr(2, 9),
+                    name,
+                    gradeId,
+                    lessonId: matchedLesson?.id || ""
+                });
             }
             setPendingSubjects(prev => [...prev, ...newPending]);
             if (fileInputRef.current) fileInputRef.current.value = "";
@@ -156,9 +178,12 @@ export default function AdminSubjectsPage() {
         if (pendingSubjects.length === 0) return;
         setSaving(true);
         try {
-            const toSave = pendingSubjects.map(s => ({ name: s.name, gradeId: s.gradeId }));
+            const toSave = pendingSubjects.map(s => ({
+                name: s.name,
+                gradeId: s.gradeId,
+                lessonId: s.lessonId || undefined
+            }));
             await SettingsService.createSubjectsBatch(toSave);
-
             toast.success(`${pendingSubjects.length} сэдэв амжилттай хадгалагдлаа`);
             setPendingSubjects([]);
             queryClient.invalidateQueries({ queryKey: ["subjects"] });
@@ -169,18 +194,17 @@ export default function AdminSubjectsPage() {
         }
     };
 
-    const displaySubjects = filterGradeId === "all"
-        ? subjects
-        : subjects.filter(s => s.gradeId === filterGradeId);
+    const displaySubjects = subjects.filter(s => {
+        if (filterGradeId !== "all" && s.gradeId !== filterGradeId) return false;
+        if (filterLessonId !== "all" && s.lessonId !== filterLessonId) return false;
+        return true;
+    });
 
     const isAllSelected = displaySubjects.length > 0 && displaySubjects.every(s => selectedIds.has(s.id));
 
     const toggleSelectAll = () => {
-        if (isAllSelected) {
-            setSelectedIds(new Set());
-        } else {
-            setSelectedIds(new Set(displaySubjects.map(s => s.id)));
-        }
+        if (isAllSelected) setSelectedIds(new Set());
+        else setSelectedIds(new Set(displaySubjects.map(s => s.id)));
     };
 
     const toggleSelect = (id: string) => {
@@ -199,12 +223,23 @@ export default function AdminSubjectsPage() {
                             <ArrowLeft className="w-5 h-5 text-slate-600" />
                         </button>
                     </Link>
-                    <h1 className="text-xl font-bold text-slate-900">Сэдвүүд удирдах</h1>
+                    <div>
+                        <h1 className="text-xl font-bold text-slate-900">Сэдвүүд удирдах</h1>
+                        <p className="text-sm text-slate-500">Хичээлтэй холбоотой сэдвүүдийг нэмэх, устгах</p>
+                    </div>
                 </div>
-                <Button variant="outline" onClick={downloadTemplate} className="gap-2">
-                    <Download className="w-4 h-4" />
-                    Загвар татах
-                </Button>
+                <div className="flex gap-2">
+                    <Link href="/admin/settings/lessons">
+                        <Button variant="outline" className="gap-2 text-sm">
+                            <BookOpen className="w-4 h-4" />
+                            Хичээлүүд
+                        </Button>
+                    </Link>
+                    <Button variant="outline" onClick={downloadTemplate} className="gap-2">
+                        <Download className="w-4 h-4" />
+                        Загвар татах
+                    </Button>
+                </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -214,6 +249,18 @@ export default function AdminSubjectsPage() {
                         <CardHeader><CardTitle>Шинэ сэдэв нэмэх</CardTitle></CardHeader>
                         <CardContent>
                             <form onSubmit={handleCreate} className="space-y-4">
+                                <div>
+                                    <label className="text-xs font-bold text-slate-500 mb-1 block">Хичээл</label>
+                                    <Select
+                                        value={selectedLessonId}
+                                        onChange={e => setSelectedLessonId(e.target.value)}
+                                    >
+                                        <option value="">Хичээл сонгох (заавал биш)</option>
+                                        {lessons.map(l => (
+                                            <option key={l.id} value={l.id}>{l.name}</option>
+                                        ))}
+                                    </Select>
+                                </div>
                                 <div>
                                     <label className="text-xs font-bold text-slate-500 mb-1 block">Сэдвийн нэр</label>
                                     <Input
@@ -251,7 +298,7 @@ export default function AdminSubjectsPage() {
                                 </div>
                                 <div className="space-y-1">
                                     <p className="text-sm font-bold text-slate-900">CSV-ээр бөөнөөр оруулах</p>
-                                    <p className="text-xs text-slate-500">Загвар файлыг ашиглан олон сэдэв нэмэх</p>
+                                    <p className="text-xs text-slate-500">Хичээл, Сэдэв, Анги баганатай CSV файл</p>
                                 </div>
                                 <input
                                     type="file"
@@ -294,14 +341,27 @@ export default function AdminSubjectsPage() {
                                 <table className="w-full text-sm text-left">
                                     <thead className="bg-slate-100 text-slate-600 font-bold">
                                         <tr>
+                                            <th className="px-4 py-2 border-b">Хичээл</th>
                                             <th className="px-4 py-2 border-b">Сэдвийн нэр</th>
-                                            <th className="px-4 py-2 border-b w-32">Анги</th>
-                                            <th className="px-4 py-2 border-b w-16"></th>
+                                            <th className="px-4 py-2 border-b w-20">Анги</th>
+                                            <th className="px-4 py-2 border-b w-12"></th>
                                         </tr>
                                     </thead>
-                                    <tbody className="divide-y divide-slate-100 italic">
+                                    <tbody className="divide-y divide-slate-100">
                                         {pendingSubjects.map((s) => (
                                             <tr key={s.tempId} className="bg-white hover:bg-slate-50">
+                                                <td className="px-4 py-2">
+                                                    <select
+                                                        className="w-full bg-transparent border-none focus:ring-0 p-0 text-slate-600 text-xs"
+                                                        value={s.lessonId}
+                                                        onChange={(e) => updatePending(s.tempId, 'lessonId', e.target.value)}
+                                                    >
+                                                        <option value="">—</option>
+                                                        {lessons.map(l => (
+                                                            <option key={l.id} value={l.id}>{l.name}</option>
+                                                        ))}
+                                                    </select>
+                                                </td>
                                                 <td className="px-4 py-2">
                                                     <input
                                                         className="w-full bg-transparent border-none focus:ring-0 p-0 text-slate-800 font-medium"
@@ -339,9 +399,9 @@ export default function AdminSubjectsPage() {
                                 <div className="flex items-center gap-4">
                                     <CardTitle>Бүртгэлтэй сэдвүүд</CardTitle>
                                     {selectedIds.size > 0 && (
-                                        <Button 
-                                            variant="destructive" 
-                                            size="sm" 
+                                        <Button
+                                            variant="destructive"
+                                            size="sm"
                                             onClick={handleBulkDelete}
                                             className="h-8 text-xs font-semibold"
                                         >
@@ -350,11 +410,21 @@ export default function AdminSubjectsPage() {
                                         </Button>
                                     )}
                                 </div>
-                                <div className="w-40">
+                                <div className="flex gap-2">
+                                    <Select
+                                        value={filterLessonId}
+                                        onChange={e => setFilterLessonId(e.target.value)}
+                                        className="text-xs w-36"
+                                    >
+                                        <option value="all">Бүх хичээл</option>
+                                        {lessons.map(l => (
+                                            <option key={l.id} value={l.id}>{l.name}</option>
+                                        ))}
+                                    </Select>
                                     <Select
                                         value={filterGradeId}
                                         onChange={e => setFilterGradeId(e.target.value)}
-                                        className="text-xs"
+                                        className="text-xs w-32"
                                     >
                                         <option value="all">Бүх анги</option>
                                         {GRADES_LIST.map(g => (
@@ -375,8 +445,8 @@ export default function AdminSubjectsPage() {
                                 {!loading && displaySubjects.length > 0 && (
                                     <>
                                         <div className="py-3 flex items-center gap-3">
-                                            <input 
-                                                type="checkbox" 
+                                            <input
+                                                type="checkbox"
                                                 checked={isAllSelected}
                                                 onChange={toggleSelectAll}
                                                 className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
@@ -386,16 +456,23 @@ export default function AdminSubjectsPage() {
                                         {displaySubjects.map((s) => (
                                             <div key={s.id} className="py-3 flex justify-between items-center group">
                                                 <div className="flex items-center gap-3">
-                                                    <input 
-                                                        type="checkbox" 
+                                                    <input
+                                                        type="checkbox"
                                                         checked={selectedIds.has(s.id)}
                                                         onChange={() => toggleSelect(s.id)}
                                                         className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                                                     />
                                                     <div>
                                                         <div className="font-semibold text-slate-900">{s.name}</div>
-                                                        <div className="text-[10px] inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-600 mt-1 uppercase font-bold tracking-tight">
-                                                            {GRADES_MAP[s.gradeId || ""] || "Бүгд"}
+                                                        <div className="flex items-center gap-2 mt-1">
+                                                            {s.lessonId && lessonsMap[s.lessonId] && (
+                                                                <span className="text-[10px] inline-flex items-center px-2 py-0.5 rounded bg-violet-100 text-violet-700 font-bold tracking-tight">
+                                                                    {lessonsMap[s.lessonId]}
+                                                                </span>
+                                                            )}
+                                                            <span className="text-[10px] inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-bold tracking-tight uppercase">
+                                                                {GRADES_MAP[s.gradeId || ""] || "Бүгд"}
+                                                            </span>
                                                         </div>
                                                     </div>
                                                 </div>
