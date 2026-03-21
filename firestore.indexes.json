@@ -353,6 +353,38 @@
             ]
         },
         {
+            "collectionGroup": "subjects",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "lessonId",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "name",
+                    "order": "ASCENDING"
+                }
+            ]
+        },
+        {
+            "collectionGroup": "subjects",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "lessonId",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "gradeId",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "name",
+                    "order": "ASCENDING"
+                }
+            ]
+        },
+        {
             "collectionGroup": "notifications",
             "queryScope": "COLLECTION",
             "fields": [

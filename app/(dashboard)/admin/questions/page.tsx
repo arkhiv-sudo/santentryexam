@@ -238,6 +238,7 @@ export default function QuestionsPage() {
     const [searchTerm, setSearchTerm] = useState("");
     const [typeFilter, setTypeFilter] = useState<QuestionType | "all">("all");
     const [gradeFilter, setGradeFilter] = useState<string | "all">("all");
+    const [lessonFilter, setLessonFilter] = useState<string | "all">("all");
     const [subjectFilter, setSubjectFilter] = useState<string | "all">("all");
     const [authorFilter, setAuthorFilter] = useState<string | "all">("all");
     const [currentPage, setCurrentPage] = useState(0);
@@ -297,7 +298,7 @@ export default function QuestionsPage() {
     useEffect(() => {
         setCurrentPage(0);
         setLastVisibleDocs([]);
-    }, [typeFilter, gradeFilter, subjectFilter, authorFilter]);
+    }, [typeFilter, gradeFilter, lessonFilter, subjectFilter, authorFilter]);
 
     const router = useRouter();
 
@@ -342,8 +343,12 @@ export default function QuestionsPage() {
     }, [subjectsData, editLessonId]);
 
     const filteredSubjects = useMemo(() => {
-        return subjectsData.filter((s: Subject) => !s.gradeId || s.gradeId === gradeFilter);
-    }, [subjectsData, gradeFilter]);
+        return subjectsData.filter((s: Subject) => {
+            if (lessonFilter !== "all" && s.lessonId !== lessonFilter) return false;
+            if (gradeFilter !== "all" && s.gradeId && s.gradeId !== gradeFilter) return false;
+            return true;
+        });
+    }, [subjectsData, gradeFilter, lessonFilter]);
 
     // Fetch Questions with Pagination & Caching
     const {
@@ -938,6 +943,19 @@ export default function QuestionsPage() {
                                 <option value="all">Бүх анги</option>
                                 {Object.entries(GRADES_MAP).map(([id, name]) => (
                                     <option key={id} value={id}>{name}</option>
+                                ))}
+                            </Select>
+                            <Select
+                                value={lessonFilter}
+                                onChange={(e) => {
+                                    setLessonFilter(e.target.value);
+                                    setSubjectFilter("all");
+                                }}
+                                className="w-36 h-9 text-sm"
+                            >
+                                <option value="all">Бүх хичээл</option>
+                                {lessonsData.map(l => (
+                                    <option key={l.id} value={l.id}>{l.name}</option>
                                 ))}
                             </Select>
                             <Select
