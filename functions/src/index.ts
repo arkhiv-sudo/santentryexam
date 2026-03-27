@@ -115,7 +115,7 @@ async function assignQuestionsToExam(examId: string, examData: Record<string, un
     }
 
     // Shuffle the combined question list so subjects are intermixed
-    const shuffledAll = shuffle(allQuestionIds);
+    const shuffledAll = shuffle(Array.from(new Set(allQuestionIds)));
 
     // Fetch all question data to build snapshot and answer key
     const questionSnapshot: any[] = [];
@@ -228,21 +228,62 @@ export const onQuestionCreate = functions.firestore
 
 export const onQuestionDelete = functions.firestore
     .document("questions/{questionId}")
-    .onDelete(async () => {
+    .onDelete(async (snap, context) => {
+        const questionId = context.params.questionId;
         await updateStat("totalQuestions", -1);
+
+        // Cascade delete exams containing this question
+        const examsSnap = await db.collection("exams").where("questionIds", "array-contains", questionId).get();
+        if (!examsSnap.empty) {
+            const batch = db.batch();
+            examsSnap.docs.forEach(doc => batch.delete(doc.ref));
+            await batch.commit();
+            console.log(`Deleted ${examsSnap.size} exams cascading from deleted question ${questionId}`);
+        }
     });
 
 // ─── Exam Triggers ────────────────────────────────────────────────────────────
 export const onExamCreate = functions.firestore
     .document("exams/{examId}")
-    .onCreate(async () => {
+    .onCreate(async (snap, context) => {
         await updateStat("totalExams", 1);
+        const data = snap.data();
+        console.log(`Exam ${context.params.examId} created – assigning questions.`);
+        await assignQuestionsToExam(context.params.examId, data);
     });
 
 export const onExamDelete = functions.firestore
     .document("exams/{examId}")
-    .onDelete(async () => {
+    .onDelete(async (snap, context) => {
+        const examId = context.params.examId;
         await updateStat("totalExams", -1);
+
+        // Cascade delete registrations, submissions, exam_results, and exam_answers
+        const collectionsToDeleteFrom = ["registrations", "submissions", "exam_results"];
+        
+        for (const col of collectionsToDeleteFrom) {
+            const querySnap = await db.collection(col).where("examId", "==", examId).get();
+            if (!querySnap.empty) {
+                // Batch delete in chunks of 500
+                const chunks = [];
+                for (let i = 0; i < querySnap.docs.length; i += 500) {
+                    chunks.push(querySnap.docs.slice(i, i + 500));
+                }
+                for (const chunk of chunks) {
+                    const batch = db.batch();
+                    chunk.forEach(doc => batch.delete(doc.ref));
+                    await batch.commit();
+                }
+            }
+        }
+
+        // Delete answerKey if exists
+        const ansDoc = await db.collection("exam_answers").doc(examId).get();
+        if (ansDoc.exists) {
+            await ansDoc.ref.delete();
+        }
+        
+        console.log(`Deleted all related data for exam ${examId}`);
     });
 
 /**
@@ -254,8 +295,16 @@ export const onExamUpdate = functions.firestore
         const before = change.before.data();
         const after = change.after.data();
 
-        if (before.status !== "published" && after.status === "published") {
-            console.log(`Exam ${context.params.examId} published – assigning questions.`);
+        const statusChangedToPublished = before.status !== "published" && after.status === "published";
+        const subjectDistributionChanged = JSON.stringify(before.subjectDistribution) !== JSON.stringify(after.subjectDistribution);
+
+        if (statusChangedToPublished) {
+            if (!after.questionsAssigned) {
+                console.log(`Exam ${context.params.examId} published – assigning questions.`);
+                await assignQuestionsToExam(context.params.examId, after);
+            }
+        } else if (after.status === "draft" && subjectDistributionChanged) {
+            console.log(`Exam ${context.params.examId} draft updated – re-assigning questions.`);
             await assignQuestionsToExam(context.params.examId, after);
         }
     });
@@ -287,97 +336,23 @@ export const onSubmissionCreate = functions.firestore
         await updateStat("totalSubmissions", 1);
 
         const submission = snap.data();
-        const { examId, answers, studentId, studentName } = submission;
+        const { examId, studentId, studentName, score, maxScore, percentage } = submission;
 
         try {
-            // 1. Fetch exam
+            // Fetch exam title for notification
             const examDoc = await db.collection("exams").doc(examId).get();
-            if (!examDoc.exists) {
-                console.error(`Submission grading: exam ${examId} not found.`);
-                return;
-            }
-            const examData = examDoc.data()!;
-            const questionIds: string[] = examData.questionIds || [];
+            const examTitle = examDoc.exists ? examDoc.data()?.title || "" : "";
 
-            // 2. Grade each answer
-            let totalScore = 0;
-            let maxScore = 0;
-            const gradedAnswers: Record<string, unknown> = {};
-
-            for (const questionId of questionIds) {
-                const qDoc = await db.collection("questions").doc(questionId).get();
-                if (!qDoc.exists) continue;
-
-                const question = qDoc.data()!;
-                const points = typeof question.points === "number" ? question.points : 1;
-                const correctAnswer = (question.correctAnswer || "").trim().toLowerCase();
-                const studentAnswer = ((answers as Record<string, string>)[questionId] || "").trim().toLowerCase();
-
-                maxScore += points;
-
-                const isCorrect = studentAnswer !== "" && studentAnswer === correctAnswer;
-                const earnedPoints = isCorrect ? points : 0;
-                totalScore += earnedPoints;
-
-                gradedAnswers[questionId] = {
-                    studentAnswer: (answers as Record<string, string>)[questionId] || "",
-                    correctAnswer: question.correctAnswer || "",
-                    isCorrect,
-                    points,
-                    earnedPoints,
-                };
-            }
-
-            const percentage = maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 0;
-
-            // 3. Update submission with score
-            await snap.ref.update({
-                score: totalScore,
-                maxScore,
-                percentage,
-                graded: true,
-                gradedAt: admin.firestore.FieldValue.serverTimestamp(),
-                gradedAnswers,
-            });
-
-            // 4. Write to exam_results collection (easy querying for dashboards)
-            await db.collection("exam_results").add({
-                submissionId: snap.id,
-                examId,
-                examTitle: examData.title || "",
-                studentId,
-                studentName,
-                score: totalScore,
-                maxScore,
-                percentage,
-                gradedAt: admin.firestore.FieldValue.serverTimestamp(),
-            });
-
-            // 5. Mark registration as completed
-            const regQuery = await db.collection("registrations")
-                .where("studentId", "==", studentId)
-                .where("examId", "==", examId)
-                .get();
-
-            if (!regQuery.empty) {
-                await regQuery.docs[0].ref.update({
-                    status: "completed",
-                    completedAt: admin.firestore.FieldValue.serverTimestamp(),
-                });
-            }
-
-            // 6. Notify parent
+            // Notify parent
             await notifyParentOfExamEvent(studentId, examId, "score_available", {
-                score: totalScore,
+                score,
                 maxScore,
                 percentage,
-                examTitle: examData.title || "",
+                examTitle,
                 studentName,
             });
-
-            console.log(`Submission ${snap.id} graded: ${totalScore}/${maxScore} (${percentage}%)`);
         } catch (error) {
-            console.error("Error grading submission:", error);
+            console.error("Error sending submission notification:", error);
         }
     });
 

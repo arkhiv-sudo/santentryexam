@@ -179,7 +179,7 @@ export function QuestionForm({
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        await onSubmit(formData as Omit<Question, "id">);
+        await onSubmit({ ...formData, lessonId: selectedLessonId } as Omit<Question, "id">);
     };
 
     return (

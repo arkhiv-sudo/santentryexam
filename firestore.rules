@@ -20,9 +20,9 @@ service cloud.firestore {
         studentId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.children;
     }
 
-    // Users
+    // Users — each user can only read their own profile; admins can read all
     match /users/{userId} {
-      allow read: if isAuth();
+      allow read: if isAdmin() || (isAuth() && request.auth.uid == userId);
       allow create: if isAuth() && request.auth.uid == userId;
       allow update: if (isAuth() && request.auth.uid == userId) || isAdmin();
       allow delete: if isAdmin();
@@ -47,7 +47,8 @@ service cloud.firestore {
       allow read: if isAdmin() || isTeacher()
         || (isStudent() && resource.data.studentId == request.auth.uid)
         || (isParent() && isParentOf(resource.data.studentId));
-      allow create: if isStudent() && request.resource.data.studentId == request.auth.uid;
+      allow create: if (isStudent() && request.resource.data.studentId == request.auth.uid) ||
+                       (isParent() && isParentOf(request.resource.data.studentId));
       allow update: if isAdmin() || (isStudent() && resource.data.studentId == request.auth.uid);
       allow delete: if isAdmin();
     }
@@ -72,6 +73,17 @@ service cloud.firestore {
 
     // Exam Answer Keys — server-side only (Admin SDK bypasses), rules for client safety
     match /exam_answers/{examId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Announcements
+    match /announcements/{announcementId} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // Archived Exams
+    match /archived_exams/{archiveId} {
       allow read, write: if isAdmin();
     }
 
@@ -124,6 +136,25 @@ service cloud.firestore {
     match /statistics/{docId} {
       allow read: if isAuth();
       allow write: if isAdmin();
+    }
+
+    // Exam Support Tickets (3-way Chat: Student ↔ Admin ↔ Teacher)
+    match /exam_tickets/{ticketId} {
+      allow read: if isAdmin() || isTeacher() || (isStudent() && resource.data.studentId == request.auth.uid);
+      // Only students can create a new ticket for themselves
+      allow create: if isStudent() && request.resource.data.studentId == request.auth.uid;
+      // Admins and teachers can update ticket (change status, forward, etc.)
+      // Students can also update (to add messages via arrayUnion in the service)
+      allow update: if isAdmin() || isTeacher()
+        || (isStudent() && resource.data.studentId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // Retake Requests
+    match /retake_requests/{requestId} {
+      allow read: if isAdmin() || (isAuth() && resource.data.studentId == request.auth.uid);
+      allow create: if isAuth() && request.resource.data.studentId == request.auth.uid;
+      allow update, delete: if isAdmin();
     }
   }
 }

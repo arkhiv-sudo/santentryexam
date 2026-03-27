@@ -1,4 +1,4 @@
-import { db } from "@/lib/firebase";
+import { db, storage } from "@/lib/firebase";
 import {
     collection,
     getDocs,
@@ -15,8 +15,10 @@ import {
     DocumentData,
     QueryDocumentSnapshot,
     QueryConstraint,
-    writeBatch
+    writeBatch,
+    getDoc
 } from "firebase/firestore";
+import { ref, deleteObject } from "firebase/storage";
 import { Question, QuestionType, UserRole, UserProfile } from "@/types";
 
 const COLLECTION_NAME = "questions";
@@ -56,10 +58,15 @@ export const QuestionService = {
         type?: QuestionType | "all",
         subject?: string | "all",
         grade?: string | "all",
-        createdBy?: string | "all"
+        createdBy?: string | "all",
+        lessonId?: string | "all"
     ): Promise<{ questions: Question[], lastVisible: QueryDocumentSnapshot<DocumentData> | null, totalCount: number }> => {
         try {
             const constraints: QueryConstraint[] = [];
+
+            if (lessonId && lessonId !== "all") {
+                constraints.push(where("lessonId", "==", lessonId));
+            }
 
             if (type && type !== "all") {
                 constraints.push(where("type", "==", type));
@@ -186,9 +193,36 @@ export const QuestionService = {
         }
     },
 
+    _deleteQuestionImages: async (question: Question): Promise<void> => {
+        const urls: string[] = [];
+        if (question.mediaUrl) urls.push(question.mediaUrl);
+        if (question.solutionMediaUrl) urls.push(question.solutionMediaUrl);
+        if (Array.isArray(question.optionImages)) {
+            question.optionImages.forEach(url => {
+                if (url) urls.push(url);
+            });
+        }
+        
+        await Promise.all(urls.map(async (url) => {
+            try {
+                if (url.includes("firebasestorage.googleapis.com")) {
+                    const fileRef = ref(storage, url);
+                    await deleteObject(fileRef);
+                }
+            } catch (e) {
+                console.error("Failed to delete image from storage:", url, e);
+            }
+        }));
+    },
+
     deleteQuestion: async (id: string): Promise<void> => {
         try {
-            await deleteDoc(doc(db, COLLECTION_NAME, id));
+            const docRef = doc(db, COLLECTION_NAME, id);
+            const snap = await getDoc(docRef);
+            if (snap.exists()) {
+                await QuestionService._deleteQuestionImages(snap.data() as Question);
+            }
+            await deleteDoc(docRef);
         } catch (error) {
             console.error("Error deleting question:", error);
             throw error;
@@ -204,6 +238,13 @@ export const QuestionService = {
             }
 
             for (const chunk of chunks) {
+                const docSnapshots = await Promise.all(chunk.map(id => getDoc(doc(db, COLLECTION_NAME, id))));
+                for (const snap of docSnapshots) {
+                    if (snap.exists()) {
+                        await QuestionService._deleteQuestionImages(snap.data() as Question);
+                    }
+                }
+
                 const batch = writeBatch(db);
                 chunk.forEach(id => {
                     batch.delete(doc(db, COLLECTION_NAME, id));
@@ -220,10 +261,12 @@ export const QuestionService = {
         type?: QuestionType | "all",
         subject?: string | "all",
         grade?: string | "all",
-        createdBy?: string | "all"
+        createdBy?: string | "all",
+        lessonId?: string | "all"
     ): Promise<number> => {
         try {
             const constraints: QueryConstraint[] = [];
+            if (lessonId && lessonId !== "all") constraints.push(where("lessonId", "==", lessonId));
             if (type && type !== "all") constraints.push(where("type", "==", type));
             if (subject && subject !== "all") constraints.push(where("subject", "==", subject));
             if (grade && grade !== "all") constraints.push(where("grade", "==", grade));

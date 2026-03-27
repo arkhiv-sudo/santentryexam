@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { auth } from "@/lib/firebase";
 import { signOut } from "firebase/auth";
 import Link from "next/link";
-import { ChevronDown, Users, FileQuestion, ClipboardList, BookOpen, FileText } from "lucide-react";
+import { ChevronDown, Users, FileQuestion, ClipboardList, BookOpen, MessageSquare } from "lucide-react";
 import { useState } from "react";
 
 export default function Header() {
@@ -46,7 +46,6 @@ export default function Header() {
                 { label: "Хэрэглэгчид", href: "/admin/users", icon: Users },
                 { label: "Асуултын сан", href: "/admin/questions", icon: FileQuestion },
                 { label: "Шалгалтууд", href: "/admin/exams", icon: BookOpen },
-                { label: "Хүсэлтүүд", href: "/admin/requests", icon: FileText },
                 { label: "Сэдвүүд", href: "/admin/settings/subjects", icon: BookOpen },
             ];
         }
@@ -56,6 +55,7 @@ export default function Header() {
                 { label: "Асуултын сан", href: "/teacher/questions", icon: BookOpen },
                 { label: "Асуулт үүсгэх", href: "/teacher/questions/create", icon: FileQuestion },
                 { label: "Шалгалтууд", href: "/teacher/exams", icon: ClipboardList },
+                { label: "Тусламж", href: "/teacher/support", icon: MessageSquare },
             ];
         }
         if (profile?.role === 'student') {

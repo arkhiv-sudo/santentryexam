@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ExamService } from "@/lib/services/exam-service";
+import { ArchiveService } from "@/lib/services/archive-service";
 import { Exam } from "@/types";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
@@ -95,6 +96,26 @@ export default function ExamsPage() {
             toast.success("Шалгалт амжилттай устгагдлаа");
         } catch {
             toast.error("Шалгалтыг устгахад алдаа гарлаа");
+        }
+    };
+
+    const handleArchive = async (id: string) => {
+        const confirmed = await confirm({
+            title: "Архивлахыг баталгаажуулах",
+            message: "Та энэ шалгалтыг архивлахдаа итгэлтэй байна уу? Архивлагдсан шалгалт идэвхтэй жагсаалтаас хасагдаж архивт хадгалагдана.",
+            confirmLabel: "Архивлах",
+            variant: "default"
+        });
+
+        if (!confirmed) return;
+        try {
+            toast.loading("Архивлож байна...", { id: "archiveToast" });
+            await ArchiveService.archiveExam(id);
+            queryClient.invalidateQueries({ queryKey: ["exams"] });
+            toast.success("Шалгалт амжилттай архивлагдлаа", { id: "archiveToast" });
+        } catch (error) {
+            console.error(error);
+            toast.error("Шалгалтыг архивлах үед алдаа гарлаа", { id: "archiveToast" });
         }
     };
 
@@ -238,9 +259,18 @@ export default function ExamsPage() {
                                                                 {reassigningExamId === exam.id ? "..." : "Дахин оноох"}
                                                             </button>
                                                         )}
+                                                        <Link href={`/admin/exams/${exam.id}/monitor`}>
+                                                            <button className="text-emerald-600 hover:text-emerald-900 font-medium text-xs transition-colors">Хянах</button>
+                                                        </Link>
                                                         <Link href={`/admin/exams/edit/${exam.id}`}>
                                                             <button className="text-blue-600 hover:text-blue-900 font-medium text-xs transition-colors">Засах</button>
                                                         </Link>
+                                                        <button
+                                                            onClick={() => handleArchive(exam.id)}
+                                                            className="text-violet-600 hover:text-violet-900 font-medium text-xs transition-colors"
+                                                        >
+                                                            Архивлах
+                                                        </button>
                                                         <button
                                                             onClick={() => handleDelete(exam.id)}
                                                             className="text-red-600 hover:text-red-900 font-medium text-xs transition-colors"

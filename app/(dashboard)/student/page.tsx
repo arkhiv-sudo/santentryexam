@@ -47,6 +47,7 @@ export default function StudentDashboard() {
         },
         enabled: !!studentGradeNumber,
         staleTime: 5 * 60 * 1000,
+        refetchOnWindowFocus: false,
     });
 
     const { data: registrations = [], isLoading: regsLoading } = useQuery({
@@ -55,6 +56,7 @@ export default function StudentDashboard() {
         enabled: !!profile?.uid,
         staleTime: 5 * 60 * 1000,
         gcTime: 10 * 60 * 1000,
+        refetchOnWindowFocus: false,
     });
 
     const { data: results = [], isLoading: resultsLoading } = useQuery({
@@ -63,6 +65,7 @@ export default function StudentDashboard() {
         enabled: !!profile?.uid,
         staleTime: 5 * 60 * 1000,
         gcTime: 10 * 60 * 1000,
+        refetchOnWindowFocus: false,
     });
 
     const registerMutation = useMutation({
@@ -86,6 +89,7 @@ export default function StudentDashboard() {
         enabled: !!profile?.uid,
         staleTime: 5 * 60 * 1000,
         gcTime: 10 * 60 * 1000,
+        refetchOnWindowFocus: false,
     });
 
     const retakeMutation = useMutation({
@@ -200,7 +204,13 @@ export default function StudentDashboard() {
                                 const regEnd = new Date(exam.registrationEndDate);
                                 const schedule = new Date(exam.scheduledAt);
                                 const registrationExpired = now > regEnd;
-                                const canStart = isRegistered && !isCompleted && now >= schedule;
+                                
+                                const examEndTime = new Date(schedule.getTime() + (exam.duration * 60000));
+                                const entryDeadline = new Date(schedule.getTime() + (10 * 60000));
+                                const outOfTime = now >= examEndTime;
+                                const hasStarted = reg?.status === "started";
+                                const isLate = !hasStarted && now > entryDeadline && now < examEndTime;
+                                const canStart = isRegistered && !isCompleted && now >= schedule && now < examEndTime && (hasStarted || now <= entryDeadline);
 
                                 return (
                                     <Card key={exam.id} className="group overflow-hidden border border-slate-100 shadow-sm hover:shadow-md transition-all duration-200 rounded-xl">
@@ -260,10 +270,23 @@ export default function StudentDashboard() {
                                                             })()}
                                                         </>
                                                     ) : isRegistered ? (
-                                                        canStart ? (
+                                                        outOfTime ? (
+                                                            <div className="bg-red-50 px-3 py-1.5 rounded-lg flex flex-col items-end gap-0.5">
+                                                                <div className="flex items-center text-red-500 text-xs font-bold gap-1">
+                                                                    <AlertCircle className="w-3.5 h-3.5" /> Хугацаа дууссан
+                                                                </div>
+                                                            </div>
+                                                        ) : isLate ? (
+                                                            <div className="bg-orange-50 px-3 py-1.5 rounded-lg flex flex-col items-end gap-0.5">
+                                                                <div className="flex items-center text-orange-600 text-xs font-bold gap-1">
+                                                                    <AlertCircle className="w-3.5 h-3.5" /> Хоцорсон
+                                                                </div>
+                                                                <span className="text-[10px] text-orange-500 font-medium whitespace-nowrap">10 минут өнгөрсөн</span>
+                                                            </div>
+                                                        ) : canStart ? (
                                                             <Link href={`/student/exam/${exam.id}`}>
                                                                 <Button className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-lg shadow-sm flex items-center gap-1.5">
-                                                                    <PlayCircle className="w-4 h-4" /> Эхлэх
+                                                                    <PlayCircle className="w-4 h-4" /> {hasStarted ? "Үргэлжлүүлэх" : "Эхлэх"}
                                                                 </Button>
                                                             </Link>
                                                         ) : (

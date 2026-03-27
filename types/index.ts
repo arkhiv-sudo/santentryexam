@@ -72,6 +72,7 @@ export interface Question {
     mediaType?: 'image' | 'audio' | 'video';
     points: number; // default 1
     subject?: string;
+    lessonId?: string;
     grade?: string;
     solution?: string;
     solutionMediaUrl?: string;
@@ -106,6 +107,9 @@ export interface Registration {
     completedAt?: Date;
     violations?: number;
     draftAnswers?: Record<string, string>;
+    extendedTime?: number; // seconds
+    forceSubmitted?: boolean;
+    ipAddress?: string;
 }
 
 export interface Submission {
@@ -164,7 +168,7 @@ export interface Correction {
 
 export interface Notification {
     id: string;
-    type: 'exam_started' | 'exam_completed' | 'score_available';
+    type: 'exam_started' | 'exam_completed' | 'score_available' | 'correction_submitted' | 'correction_approved' | 'correction_rejected';
     recipientId: string; // parent uid
     studentId: string;
     studentName: string;
@@ -176,4 +180,24 @@ export interface Notification {
     percentage?: number;
     read: boolean;
     createdAt: Date;
+}
+
+export interface ExamMessage {
+    id: string; // usually auto-generated
+    senderId: string;
+    senderRole: 'student' | 'admin' | 'teacher';
+    senderName: string;
+    content: string;
+    createdAt: Date;
+}
+
+export interface ExamTicket {
+    id: string;
+    examId: string;
+    studentId: string;
+    studentName: string;
+    status: 'open' | 'forwarded_to_teacher' | 'resolved';
+    createdAt: Date;
+    updatedAt: Date;
+    messages: ExamMessage[];
 }

@@ -5,7 +5,7 @@ import {
     getDoc,
     addDoc,
     updateDoc,
-    deleteDoc,
+
     doc,
     query,
     orderBy,
@@ -74,7 +74,31 @@ export const ExamService = {
     },
 
     deleteExam: async (id: string): Promise<void> => {
-        await deleteDoc(doc(db, EXAMS, id));
+        const { writeBatch } = await import("firebase/firestore");
+        const batch = writeBatch(db);
+
+        // 1. Delete the exam document itself
+        batch.delete(doc(db, EXAMS, id));
+
+        // 2. Delete all registrations for this exam
+        const regSnap = await getDocs(
+            query(collection(db, REGISTRATIONS), where("examId", "==", id))
+        );
+        regSnap.forEach(d => batch.delete(d.ref));
+
+        // 3. Delete all submissions for this exam
+        const subSnap = await getDocs(
+            query(collection(db, SUBMISSIONS), where("examId", "==", id))
+        );
+        subSnap.forEach(d => batch.delete(d.ref));
+
+        // 4. Delete all exam results for this exam
+        const resSnap = await getDocs(
+            query(collection(db, EXAM_RESULTS), where("examId", "==", id))
+        );
+        resSnap.forEach(d => batch.delete(d.ref));
+
+        await batch.commit();
     },
 
     // ── Registration ──────────────────────────────────────────────────────────
@@ -126,12 +150,29 @@ export const ExamService = {
         const reg = await ExamService.getStudentRegistration(studentId, examId);
         if (!reg) throw new Error("Not registered for this exam");
         if (reg.status === "completed") throw new Error("Exam already completed");
+        
+        // Fetch student IP address
+        let ipAddress = "";
+        try {
+            const res = await fetch("https://api.ipify.org?format=json");
+            const data = await res.json();
+            ipAddress = data.ip;
+        } catch (e) {
+            console.warn("Could not fetch IP", e);
+        }
+
         // Already started – don't overwrite startedAt on page reload
-        if (reg.status === "started") return reg.id;
+        if (reg.status === "started") {
+            if (ipAddress && !reg.ipAddress) {
+                await updateDoc(doc(db, REGISTRATIONS, reg.id), { ipAddress });
+            }
+            return reg.id;
+        }
 
         await updateDoc(doc(db, REGISTRATIONS, reg.id), {
             status: "started",
             startedAt: Timestamp.now(),
+            ipAddress,
         });
         return reg.id;
     },

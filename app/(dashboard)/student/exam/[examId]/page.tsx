@@ -9,9 +9,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import MathRenderer from "@/components/exam/MathRenderer";
 import { toast } from "sonner";
 import { ExamService } from "@/lib/services/exam-service";
+import { RetakeService } from "@/lib/services/retake-service";
 import { useServerTime, getServerTimeValue } from "@/hooks/useServerTime";
-import { ExamQuestion } from "@/types";
+import { ExamQuestion, Registration } from "@/types";
+import { db } from "@/lib/firebase";
+import { doc, onSnapshot } from "firebase/firestore";
 import { AlertTriangle, Clock, Send, ChevronLeft, ChevronRight, CheckCircle, Loader2 } from "lucide-react";
+import ExamSupportChat from "@/components/exam/ExamSupportChat";
 
 const AUTOSAVE_KEY = (examId: string, uid: string) => `exam_draft_${examId}_${uid}`;
 const MAX_VIOLATIONS = 3;
@@ -40,6 +44,7 @@ export default function ExamPage() {
     const [currentIdx, setCurrentIdx] = useState(0);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
+    const [isOfflineRetrying, setIsOfflineRetrying] = useState(false);
     const [started, setStarted] = useState(false);
     const [timeLeft, setTimeLeft] = useState(0);
     const [submitting, setSubmitting] = useState(false);
@@ -48,6 +53,8 @@ export default function ExamPage() {
     const [showViolationWarning, setShowViolationWarning] = useState(false);
     const [preloading, setPreloading] = useState(false);
     const [preloadCountdown, setPreloadCountdown] = useState(15);
+    const [liveReg, setLiveReg] = useState<Registration | null>(null);
+    const [retakeRequested, setRetakeRequested] = useState(false);
 
     const violationsRef = useRef(0);
     const submittedRef = useRef(false);
@@ -59,6 +66,23 @@ export default function ExamPage() {
     const lastSavedAnswersRef = useRef<string>("");
 
     useEffect(() => { answersRef.current = answers; }, [answers]);
+
+    // ── Live listener to handle admin forced updates ───────────────────────
+    useEffect(() => {
+        if (!meta?.registrationId) return;
+        const unsub = onSnapshot(doc(db, "registrations", meta.registrationId), (d) => {
+            if (d.exists()) {
+                const data = d.data() as Registration;
+                setLiveReg(data);
+                // Force submit from admin
+                if (data.forceSubmitted && !submittedRef.current) {
+                    toast.error("Шалгалт админаас хүчээр дуусгагдлаа!");
+                    handleSubmitRef.current();
+                }
+            }
+        });
+        return () => unsub();
+    }, [meta?.registrationId]);
 
     // ── Load saved draft from localStorage ─────────────────────────────────
     useEffect(() => {
@@ -149,7 +173,26 @@ export default function ExamPage() {
                     registrationId: data.registrationId,
                     registrationStatus: data.registrationStatus,
                 });
-                setQuestions(data.questions);
+                const shuffledQuestions = data.questions.map((q: ExamQuestion) => {
+                    if (q.type === 'multiple_choice' && q.options && q.options.length > 0) {
+                        const combined = q.options.map((opt, i) => ({
+                            opt,
+                            img: q.optionImages && q.optionImages.length > i ? q.optionImages[i] : null
+                        }));
+                        for (let i = combined.length - 1; i > 0; i--) {
+                            const j = Math.floor(Math.random() * (i + 1));
+                            [combined[i], combined[j]] = [combined[j], combined[i]];
+                        }
+                        
+                        const newQ = { ...q, options: combined.map(c => c.opt) };
+                        if (q.optionImages && q.optionImages.length > 0) {
+                            newQ.optionImages = combined.map(c => c.img as string);
+                        }
+                        return newQ;
+                    }
+                    return q;
+                });
+                setQuestions(shuffledQuestions);
                 // #2 FIX: Compute remaining time from real scheduledAt so a late
                 // page-load or reload shows the correct countdown, not full duration.
                 const examEndMs = data.scheduledAt + data.duration * 60_000;
@@ -167,11 +210,8 @@ export default function ExamPage() {
 
 
     // ── Submit exam ────────────────────────────────────────────────────────
-    const handleSubmit = useCallback(async () => {
-        if (submittedRef.current || !user || !meta) return;
-        submittedRef.current = true;
-        setSubmitting(true);
-
+    const attemptSubmit = useCallback(async (attempt: number = 1): Promise<void> => {
+        if (!user || !meta) return;
         try {
             const studentName = profile
                 ? `${profile.lastName} ${profile.firstName}`.trim()
@@ -192,15 +232,32 @@ export default function ExamPage() {
 
             localStorage.removeItem(AUTOSAVE_KEY(examId, user.uid));
             setSubmitted(true);
-            toast.success("Шалгалт амжилттай илгээгдлээ! Дүн тооцоологдох болно.");
-        } catch (err) {
-            submittedRef.current = false;
-            console.error("Submission failed", err);
-            toast.error("Илгээхэд алдаа гарлаа. Дахин оролдоно уу.");
-        } finally {
+            setIsOfflineRetrying(false);
             setSubmitting(false);
+            toast.success("Шалгалт амжилттай илгээгдлээ! Дүн тооцоологдох болно.");
+        } catch (err: unknown) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            if (errorMsg === "Failed to fetch" || errorMsg.includes("NetworkError") || typeof navigator !== "undefined" && !navigator.onLine) {
+                setIsOfflineRetrying(true);
+                toast.error(`Сүлжээ тасарсан байна. Дахин оролдож байна... (${attempt})`);
+                setTimeout(() => attemptSubmit(attempt + 1), 5000);
+            } else {
+                submittedRef.current = false;
+                setSubmitting(false);
+                setIsOfflineRetrying(false);
+                console.error("Submission failed", err);
+                toast.error(errorMsg || "Илгээхэд алдаа гарлаа. Дахин баталгаажуулна уу.");
+            }
         }
     }, [user, profile, examId, answers, timeLeft, meta]);
+
+    const handleSubmit = useCallback(async () => {
+        if (submittedRef.current || !user || !meta) return;
+        submittedRef.current = true;
+        setSubmitting(true);
+        setIsOfflineRetrying(false);
+        await attemptSubmit(1);
+    }, [user, meta, attemptSubmit]);
 
     // Keep ref in sync with the latest handleSubmit so timer never calls stale version
     useEffect(() => { handleSubmitRef.current = handleSubmit; }, [handleSubmit]);
@@ -214,7 +271,7 @@ export default function ExamPage() {
             return;
         }
 
-        const examEndMs = meta.scheduledAt + meta.duration * 60_000;
+        const examEndMs = meta.scheduledAt + meta.duration * 60_000 + (liveReg?.extendedTime ? liveReg.extendedTime * 1000 : 0);
 
         const timer = setInterval(() => {
             const remaining = Math.floor((examEndMs - getServerTimeValue()) / 1000);
@@ -232,7 +289,7 @@ export default function ExamPage() {
 
         return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [started, meta]); // ✅ removed handleSubmit dependency — using ref instead
+    }, [started, meta, liveReg?.extendedTime]); // ✅ added extendedTime so time updates natively
     
     // ── 15s Preload Countdown ──────────────────────────────────────────────
     useEffect(() => {
@@ -359,6 +416,9 @@ export default function ExamPage() {
 
     // ─── Render: already submitted ────────────────────────────────────────────
     if (submitted) {
+        const _examEndMs = meta ? meta.scheduledAt + meta.duration * 60_000 + (liveReg?.extendedTime ? liveReg.extendedTime * 1000 : 0) : 0;
+        const _canRetake = getServerTimeValue() < _examEndMs;
+
         return (
             <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
                 <Card className="max-w-md w-full">
@@ -373,6 +433,35 @@ export default function ExamPage() {
                         <Button onClick={() => router.push("/student")} className="w-full bg-blue-600 text-white">
                             Хянах самбар руу буцах
                         </Button>
+
+                        {_canRetake && user && (
+                            <div className="pt-4 mt-6 border-t border-slate-100">
+                                <p className="text-xs text-slate-400 mb-3">Техникийн эсвэл бусад асуудлаас болж шалгалт дутуу илгээгдсэн бол дахин өгөх хүсэлт илгээх боломжтой (Шалгалтын цаг дуусахаас өмнө).</p>
+                                <Button 
+                                    variant="outline" 
+                                    disabled={retakeRequested}
+                                    onClick={async () => {
+                                        try {
+                                            await RetakeService.requestRetake({
+                                                studentId: user.uid,
+                                                examId,
+                                                reason: "Техникийн алдаанаас болж шалгалт дутуу зогссон",
+                                                studentName: profile ? `${profile.lastName} ${profile.firstName}` : user.email || user.uid,
+                                                examTitle: meta?.title || "Шалгалт"
+                                            });
+                                            setRetakeRequested(true);
+                                            toast.success("Дахин өгөх хүсэлт илгээгдлээ. Админ зөвшөөртөл түр хүлээнэ үү.");
+                                        } catch (e: unknown) {
+                                            const msg = e instanceof Error ? e.message : "Харамсалтай нь хүсэлт илгээхэд алдаа гарлаа.";
+                                            toast.error(msg);
+                                        }
+                                    }}
+                                    className="w-full text-slate-600 hover:text-blue-600 border-slate-200"
+                                >
+                                    {retakeRequested ? "Хүсэлт илгээгдсэн" : "Дахин өгөх (Алдаа гарсан үед)"}
+                                </Button>
+                            </div>
+                        )}
                     </CardContent>
                 </Card>
             </div>
@@ -406,6 +495,38 @@ export default function ExamPage() {
 
     // ─── Render: intro screen ─────────────────────────────────────────────────
     if (!started) {
+        const _now = getServerTimeValue();
+        const _examEndMs = meta.scheduledAt + meta.duration * 60_000;
+        const _entryDeadlineMs = meta.scheduledAt + 10 * 60_000;
+        
+        const isEnded = _now >= _examEndMs;
+        const isLate = _now > _entryDeadlineMs;
+
+        if (isEnded || isLate) {
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+                    <Card className="max-w-md w-full shadow-2xl">
+                        <CardHeader className="bg-red-600 text-white rounded-t-xl p-8 text-center">
+                            <AlertTriangle className="w-12 h-12 mx-auto mb-4" />
+                            <CardTitle className="text-2xl font-black">
+                                {isEnded ? "Хугацаа дууссан" : "Шалгалтаас хоцорсон байна"}
+                            </CardTitle>
+                        </CardHeader>
+                        <CardContent className="p-8 text-center space-y-6">
+                            <p className="text-slate-600 font-medium">
+                                {isEnded 
+                                    ? "Энэхүү шалгалтын хугацаа дууссан байна." 
+                                    : "Шалгалт эхэлснээс хойш 10 минут өнгөрсөн тул орох боломжгүй."}
+                            </p>
+                            <Button onClick={() => router.push("/student")} className="w-full bg-slate-800 text-white h-12 rounded-xl">
+                                Буцах
+                            </Button>
+                        </CardContent>
+                    </Card>
+                </div>
+            );
+        }
+
         return (
             <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
                 <Card className="max-w-lg w-full shadow-2xl">
@@ -480,15 +601,19 @@ export default function ExamPage() {
 
                     <Button
                         onClick={() => {
-                            if (window.confirm(`${questions.length - answeredCount} асуулт хариулаагүй байна. Шалгалтаа илгээх үү?`)) {
+                            const unansweredCount = questions.length - answeredCount;
+                            const msg = unansweredCount > 0 
+                                ? `${unansweredCount} асуулт хариулаагүй байна. Шалгалтаа илгээх үү?`
+                                : `Та бүх асуултандаа хариулсан байна. Шалгалтаа илгээхдээ итгэлтэй байна уу?`;
+                            if (window.confirm(msg)) {
                                 handleSubmit();
                             }
                         }}
-                        disabled={submitting}
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold gap-2 shrink-0"
+                        disabled={submitting || isOfflineRetrying}
+                        className={`${isOfflineRetrying ? "bg-amber-600 hover:bg-amber-700" : "bg-emerald-600 hover:bg-emerald-700"} text-white font-bold gap-2 shrink-0`}
                     >
                         <Send className="w-4 h-4" />
-                        {submitting ? "Илгээж байна..." : "Илгээх"}
+                        {isOfflineRetrying ? "Сүлжээ хүлээж байна..." : submitting ? "Илгээж байна..." : "Илгээх"}
                     </Button>
                 </div>
 
@@ -652,15 +777,19 @@ export default function ExamPage() {
                                         ) : (
                                             <Button
                                                 onClick={() => {
-                                                    if (window.confirm(`${questions.length - answeredCount} асуулт хариулаагүй байна. Шалгалтаа илгээх үү?`)) {
+                                                    const unansweredCount = questions.length - answeredCount;
+                                                    const msg = unansweredCount > 0 
+                                                        ? `${unansweredCount} асуулт хариулаагүй байна. Шалгалтаа илгээх үү?`
+                                                        : `Та бүх асуултандаа хариулсан байна. Шалгалтаа илгээхдээ итгэлтэй байна уу?`;
+                                                    if (window.confirm(msg)) {
                                                         handleSubmit();
                                                     }
                                                 }}
-                                                className="gap-2 bg-emerald-600 text-white"
-                                                disabled={submitting}
+                                                className={`gap-2 text-white ${isOfflineRetrying ? "bg-amber-600 hover:bg-amber-700" : "bg-emerald-600 hover:bg-emerald-700"}`}
+                                                disabled={submitting || isOfflineRetrying}
                                             >
                                                 <Send className="w-4 h-4" />
-                                                {submitting ? "Илгээж байна..." : "Шалгалт илгээх"}
+                                                {isOfflineRetrying ? "Сүлжээ хүлээж байна..." : submitting ? "Илгээж байна..." : "Шалгалт илгээх"}
                                             </Button>
                                         )}
                                     </div>
@@ -670,6 +799,15 @@ export default function ExamPage() {
                     </div>
                 </div>
             </div>
+            
+            {/* Live Chat Support */}
+            {user && profile && (
+                <ExamSupportChat 
+                    examId={examId} 
+                    studentId={user.uid} 
+                    studentName={`${profile.lastName || ""} ${profile.firstName || ""}`.trim()} 
+                />
+            )}
         </div>
     );
 }

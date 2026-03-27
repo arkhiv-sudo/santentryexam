@@ -181,31 +181,92 @@ export default function ParentExamReviewPage() {
                                 <hr className="my-8 border-slate-100 border-dashed" />
 
                                 {/* Answers Section */}
-                                <div className="grid sm:grid-cols-2 gap-6">
-                                    {/* Student's Answer */}
-                                    <div className={`p-5 rounded-2xl border-2 ${isCorrect ? 'bg-emerald-50/50 border-emerald-200' : 'bg-red-50/50 border-red-200'}`}>
-                                        <p className={`text-[10px] uppercase font-black tracking-widest mb-2 ${isCorrect ? 'text-emerald-600' : 'text-red-600'}`}>Сурагчийн хариулт</p>
-                                        <div className="font-bold text-slate-800">
-                                            {graded?.studentAnswer ? (
-                                                <MathRenderer content={graded.studentAnswer} />
-                                            ) : (
-                                                <span className="text-slate-400 italic">Хариулаагүй</span>
-                                            )}
-                                        </div>
+                                {q.type === "multiple_choice" && q.options && q.options.length > 0 ? (
+                                    <div className="space-y-3">
+                                        {q.options.map((opt, idx) => {
+                                            const letter = String.fromCharCode(65 + idx);
+                                            const isStudentSelected = graded?.studentAnswer === opt;
+                                            
+                                            let isCorrectAnswerOption = false;
+                                            if (graded?.correctAnswer) {
+                                                const correctAnsClean = graded.correctAnswer.trim().toLowerCase();
+                                                const validLetters = [ ["a", "а"], ["b", "б"], ["c", "в"], ["d", "г"] ];
+                                                if (opt.trim().toLowerCase() === correctAnsClean) {
+                                                     isCorrectAnswerOption = true;
+                                                } else if (idx < validLetters.length && validLetters[idx].includes(correctAnsClean)) {
+                                                     isCorrectAnswerOption = true;
+                                                }
+                                            }
+                                            
+                                            let borderClass = "border-slate-100 bg-white opacity-80";
+                                            let iconBg = "bg-slate-100 text-slate-500";
+                                            let textClass = "text-slate-600";
+                                            let labelBadge = null;
+                                            
+                                            if (isCorrectAnswerOption) {
+                                                borderClass = "border-emerald-500 bg-emerald-50 shadow-sm";
+                                                iconBg = "bg-emerald-500 text-white";
+                                                textClass = "text-emerald-800 font-bold";
+                                                if (isStudentSelected) {
+                                                    labelBadge = <span className="text-[10px] uppercase font-black px-2 py-1 rounded bg-emerald-200 text-emerald-800">Зөв сонгосон</span>;
+                                                } else {
+                                                    labelBadge = <span className="text-[10px] uppercase font-black px-2 py-1 rounded bg-emerald-200 text-emerald-800">Зөв хариулт</span>;
+                                                }
+                                            } else if (isStudentSelected) {
+                                                borderClass = "border-red-400 bg-red-50 shadow-sm";
+                                                iconBg = "bg-red-500 text-white";
+                                                textClass = "text-red-800 font-bold";
+                                                labelBadge = <span className="text-[10px] uppercase font-black px-2 py-1 rounded bg-red-200 text-red-800">Буруу сонгосон</span>;
+                                            }
+                                            
+                                            return (
+                                                <div key={idx} className={`flex items-start gap-4 p-4 rounded-2xl border-2 transition-all ${borderClass}`}>
+                                                    <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-black text-sm shrink-0 ${iconBg}`}>
+                                                        {letter}
+                                                    </div>
+                                                    <div className={`flex-1 pt-1 ${textClass}`}>
+                                                        <MathRenderer content={opt} />
+                                                        {q.optionImages?.[idx] && (
+                                                            // eslint-disable-next-line @next/next/no-img-element
+                                                            <img src={q.optionImages[idx]} loading="lazy" alt={`Option ${letter}`} className="mt-2 max-h-24 object-contain rounded" />
+                                                        )}
+                                                    </div>
+                                                    {labelBadge && (
+                                                        <div className="shrink-0 pt-1">
+                                                            {labelBadge}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
                                     </div>
+                                ) : (
+                                    <div className="grid sm:grid-cols-2 gap-6">
+                                        {/* Student's Answer */}
+                                        <div className={`p-5 rounded-2xl border-2 ${isCorrect ? 'bg-emerald-50/50 border-emerald-200' : 'bg-red-50/50 border-red-200'}`}>
+                                            <p className={`text-[10px] uppercase font-black tracking-widest mb-2 ${isCorrect ? 'text-emerald-600' : 'text-red-600'}`}>Сурагчийн хариулт</p>
+                                            <div className="font-bold text-slate-800">
+                                                {graded?.studentAnswer ? (
+                                                    <MathRenderer content={graded.studentAnswer} />
+                                                ) : (
+                                                    <span className="text-slate-400 italic">Хариулаагүй</span>
+                                                )}
+                                            </div>
+                                        </div>
 
-                                    {/* Correct Answer */}
-                                    <div className="p-5 rounded-2xl bg-blue-50/50 border-2 border-blue-200">
-                                        <p className="text-[10px] uppercase text-blue-600 font-black tracking-widest mb-2">Зөв хариулт</p>
-                                        <div className="font-bold text-slate-800">
-                                            {graded?.correctAnswer ? (
-                                                <MathRenderer content={graded.correctAnswer} />
-                                            ) : (
-                                                <span className="text-slate-400 italic">Тодорхойгүй</span>
-                                            )}
+                                        {/* Correct Answer */}
+                                        <div className="p-5 rounded-2xl bg-blue-50/50 border-2 border-blue-200">
+                                            <p className="text-[10px] uppercase text-blue-600 font-black tracking-widest mb-2">Зөв хариулт</p>
+                                            <div className="font-bold text-slate-800">
+                                                {graded?.correctAnswer ? (
+                                                    <MathRenderer content={graded.correctAnswer} />
+                                                ) : (
+                                                    <span className="text-slate-400 italic">Тодорхойгүй</span>
+                                                )}
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
+                                )}
                             </CardContent>
                         </Card>
                     );

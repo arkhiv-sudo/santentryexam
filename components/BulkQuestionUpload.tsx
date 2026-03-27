@@ -60,27 +60,47 @@ export function BulkQuestionUpload({ allSubjects, allLessons, onComplete }: Bulk
 
     const downloadTemplate = async () => {
         const headers = [
-            "Асуулт", "Төрөл (multiple_choice эсвэл input)", "Зөв хариулт", "Оноо", "Анги", "Хичээл", "Сэдэв", "Асуултын зураг", "Бодолт", "Бодолтын зураг",
-            "А", "А-Зураг", "Б", "Б-Зураг", "В", "В-Зураг", "Г", "Г-Зураг", "Д", "Д-Зураг"
+            "Асуулт",
+            "Төрөл (multiple_choice эсвэл input)",
+            "Зөв хариулт",
+            "Оноо",
+            "Анги",
+            "Хичээл",
+            "Сэдэв",
+            "Асуултын зураг",
+            "Бодолт",
+            "Бодолтын зураг",
+            "А", "А-Зураг",
+            "Б", "Б-Зураг",
+            "В", "В-Зураг",
+            "Г", "Г-Зураг",
+            "Д", "Д-Зураг"
         ];
+        // Each row: one per question type - multiple_choice, input (fill_in_blank), multiple_choice with image options
         const exampleData = [
+            // --- 1. Сонголттой асуулт (multiple_choice) ---
             [
                 "Гурвалжны дотоод өнцгүүдийн нийлбэр хэд вэ?",
                 "multiple_choice",
-                "180",
+                "Б",         // Зөв хариулт: сонголтын үсэгний дугаар эсвэл сонголтын text
                 "1",
                 "6",
                 "Математик",
-                "Алгебр",
-                "triangle.png",
-                "Гурвалжны өнцгүүдийг нэмэхэд 180 гардаг.",
-                "solution.png",
-                "90", "", "180", "", "270", "", "360", "", "", ""
+                "Геометр",
+                "",           // Асуултын зураг байвал нэр бичнэ (жш: triangle.png)
+                "Гурвалжны өнцгүүдийн нийлбэр 180° байна.",
+                "",           // Бодолтын зураг
+                "90°",   "",  // А, А-Зураг
+                "180°",  "",  // Б, Б-Зураг  ← зөв хариулт
+                "270°",  "",  // В, В-Зураг
+                "360°",  "",  // Г, Г-Зураг
+                "",      ""   // Д, Д-Зураг (заавал биш)
             ],
+            // --- 2. Бичгийн хариулттай асуулт (input / fill_in_blank) ---
             [
                 "х + 5 = 12 бол х-ийн утгыг ол?",
                 "input",
-                "7",
+                "7",          // Зөв хариулт: сурагч бичих утга
                 "1",
                 "6",
                 "Математик",
@@ -88,7 +108,29 @@ export function BulkQuestionUpload({ allSubjects, allLessons, onComplete }: Bulk
                 "",
                 "12 - 5 = 7",
                 "",
-                "", "", "", "", "", "", "", "", "", ""
+                "", "",  // А, А-Зураг  (input тул сонголт хэрэггүй)
+                "", "",
+                "", "",
+                "", "",
+                "", ""
+            ],
+            // --- 3. Зурагтай сонголттой асуулт (multiple_choice + зургийн сонголт) ---
+            [
+                "Дараах дүрсүүдээс ямар нь тойрог вэ?",
+                "multiple_choice",
+                "А",          // Зөв хариулт
+                "2",
+                "5",
+                "Математик",
+                "Геометр",
+                "question_img.png",   // Асуултын зураг
+                "Тойрог гэдэг нь тэнцвэртэй дугуй хэлбэр юм.",
+                "solution_img.png",   // Бодолтын зураг
+                "Тойрог",  "circle.png",   // А, А-Зураг ← зөв хариулт
+                "Квадрат", "square.png",   // Б, Б-Зураг
+                "Гурвалжин", "",           // В, В-Зураг
+                "", "",
+                "", ""
             ]
         ];
 
@@ -219,7 +261,11 @@ export function BulkQuestionUpload({ allSubjects, allLessons, onComplete }: Bulk
                     if (!content) throw new Error("Асуултын агуулга хоосон байна");
                     if (!correctAnswer) throw new Error("Зөв хариулт хоосон байна");
                     if (isNaN(points)) throw new Error("Оноо тоо байх ёстой");
-                    if (type !== 'multiple_choice' && type !== 'input') throw new Error("Төрөл буруу байна (multiple_choice эсвэл input)");
+                    // Accept both 'input' and 'fill_in_blank' as the same type
+                    const normalizedType: QuestionType = (type === 'fill_in_blank' ? 'input' : type) as QuestionType;
+                    if (normalizedType !== 'multiple_choice' && normalizedType !== 'input') {
+                        throw new Error("Төрөл буруу байна (multiple_choice эсвэл input / fill_in_blank)");
+                    }
 
                     // Image matching
                     const imageName = (row["Асуултын зураг"] || row.ImageName || row.image || "").toLowerCase().trim();
@@ -322,7 +368,7 @@ export function BulkQuestionUpload({ allSubjects, allLessons, onComplete }: Bulk
                     newPending.push({
                         tempId,
                         content,
-                        type,
+                        type: normalizedType,
                         options,
                         optionImages: optionImages.filter((_, i) => i < options.length),
                         correctAnswer,

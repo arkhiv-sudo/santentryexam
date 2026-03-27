@@ -55,7 +55,7 @@ interface Correction {
     createdAt: { toDate?: () => Date } | null;
 }
 
-type PendingQuestion = Omit<Question, "id"> & { tempId: string; imageFile?: Blob; imageUrl?: string };
+type PendingQuestion = Omit<Question, "id"> & { tempId: string; imageFile?: Blob; imageUrl?: string; optionImagesFiles?: (Blob | null)[] };
 type InvalidQuestionRow = Record<string, string>;
 
 const validateLatex = (text: string): { isValid: boolean, error?: string } => {
@@ -97,6 +97,10 @@ export const validateRow = (
     const answerRaw = row["Зөв хариу"]?.trim() || "";
     const solution = row["Бодолт"]?.trim() || "";
     const imageRaw = row["Зураг"]?.trim() || "";
+    const imgA = row["Сонголт А зураг"]?.trim() || "";
+    const imgB = row["Сонголт Б зураг"]?.trim() || "";
+    const imgC = row["Сонголт В зураг"]?.trim() || "";
+    const imgD = row["Сонголт Г зураг"]?.trim() || "";
 
 
     let errorReason = "";
@@ -159,14 +163,24 @@ export const validateRow = (
 
     // 5. Options & Answer check
     let options: string[] | undefined;
+    let finalAnswer = answerRaw;
     if (!errorReason && systemType === "multiple_choice") {
         options = [optA, optB, optC, optD].filter(o => o !== "");
         if (options.length < 2) {
             errorReason = "Сонгох асуулт хамгийн багадаа 2 сонголттой байх ёстой.";
+        } else {
+            const lowerAnsw = answerRaw.toLowerCase().trim();
+            if (["a", "а"].includes(lowerAnsw) && optA) finalAnswer = optA;
+            else if (["b", "б"].includes(lowerAnsw) && optB) finalAnswer = optB;
+            else if (["c", "в"].includes(lowerAnsw) && optC) finalAnswer = optC;
+            else if (["d", "г"].includes(lowerAnsw) && optD) finalAnswer = optD;
+            else if (!options.includes(answerRaw)) {
+                errorReason = "Зөв хариу хувилбаруудтай таарахгүй байна (А, Б, В, Г гэж бичнэ үү эсвэл хариултыг бүтнээр нь бичнэ үү).";
+            }
         }
     }
 
-    if (!errorReason && !answerRaw) {
+    if (!errorReason && !finalAnswer) {
         errorReason = "Зөв хариу бичээгүй байна.";
     }
 
@@ -186,24 +200,33 @@ export const validateRow = (
     }
 
     // 8. Image validation
-    let parsedImage: Blob | undefined;
-    if (!errorReason && imageRaw) {
-        let foundImage = imageFilesMap.get(imageRaw) || imageFilesMap.get(`images/${imageRaw}`) || imageFilesMap.get(`questions/images/${imageRaw}`);
-        if (!foundImage) {
-            // Fuzzy search by filename ending
+    const getBlob = (imgName: string | undefined) => {
+        if (!imgName) return undefined;
+        let found = imageFilesMap.get(imgName) || imageFilesMap.get(`images/${imgName}`) || imageFilesMap.get(`questions/images/${imgName}`);
+        if (!found) {
             for (const [path, blob] of imageFilesMap.entries()) {
-                if (path.endsWith("/" + imageRaw) || path === imageRaw) {
-                    foundImage = blob;
+                if (path.endsWith("/" + imgName) || path === imgName) {
+                    found = blob;
                     break;
                 }
             }
         }
-        if (!foundImage) {
-            errorReason = `Зураг олдсонгүй: "${imageRaw}". ZIP файлын images/ хавтаст байхгүй байна.`;
-        } else {
-            parsedImage = foundImage;
-        }
+        return found;
+    };
+
+    const parsedImage = getBlob(imageRaw);
+    if (!errorReason && imageRaw && !parsedImage) {
+        errorReason = `Зураг олдсонгүй: "${imageRaw}". ZIP файлын images/ хавтаст байхгүй байна.`;
     }
+
+    const blobA = getBlob(imgA);
+    if (!errorReason && imgA && !blobA) errorReason = `Сонголт А зураг олдсонгүй: "${imgA}"`;
+    const blobB = getBlob(imgB);
+    if (!errorReason && imgB && !blobB) errorReason = `Сонголт Б зураг олдсонгүй: "${imgB}"`;
+    const blobC = getBlob(imgC);
+    if (!errorReason && imgC && !blobC) errorReason = `Сонголт В зураг олдсонгүй: "${imgC}"`;
+    const blobD = getBlob(imgD);
+    if (!errorReason && imgD && !blobD) errorReason = `Сонголт Г зураг олдсонгүй: "${imgD}"`;
 
     // If any error exists, push to invalid and return early
     if (errorReason || !foundSubject || !systemType) {
@@ -217,12 +240,14 @@ export const validateRow = (
             content,
             grade: gradeRaw,
             subject: foundSubject.id,
+            lessonId: foundSubject.lessonId,
             type: systemType,
             points: pointsNum,
             options,
-            correctAnswer: answerRaw,
+            correctAnswer: finalAnswer,
             solution,
             ...(parsedImage ? { imageFile: parsedImage } : {}),
+            optionImagesFiles: [blobA || null, blobB || null, blobC || null, blobD || null],
             createdBy: userId,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
@@ -358,7 +383,7 @@ export default function QuestionsPage() {
         isError,
         error
     } = useQuery({
-        queryKey: ["admin_questions", typeFilter, gradeFilter, subjectFilter, authorFilter, currentPage],
+        queryKey: ["admin_questions", typeFilter, gradeFilter, subjectFilter, authorFilter, lessonFilter, currentPage],
         queryFn: async () => {
             const lastDoc = currentPage === 0 ? undefined : lastVisibleDocs[currentPage - 1];
             return await QuestionService.getQuestionsPaginated(
@@ -367,7 +392,8 @@ export default function QuestionsPage() {
                 typeFilter,
                 subjectFilter,
                 gradeFilter,
-                authorFilter
+                authorFilter,
+                lessonFilter
             );
         },
         staleTime: 15 * 60 * 1000,
@@ -410,18 +436,19 @@ export default function QuestionsPage() {
             const nextPage = currentPage + 1;
             const lastDoc = paginatedData?.lastVisible;
             queryClient.prefetchQuery({
-                queryKey: ["admin_questions", typeFilter, gradeFilter, subjectFilter, authorFilter, nextPage],
+                queryKey: ["admin_questions", typeFilter, gradeFilter, subjectFilter, authorFilter, lessonFilter, nextPage],
                 queryFn: () => QuestionService.getQuestionsPaginated(
                     PAGE_SIZE,
                     lastDoc || undefined,
                     typeFilter,
                     subjectFilter,
                     gradeFilter,
-                    authorFilter
+                    authorFilter,
+                    lessonFilter
                 ),
             });
         }
-    }, [hasNext, currentPage, paginatedData?.lastVisible, queryClient, typeFilter, gradeFilter, subjectFilter, authorFilter]);
+    }, [hasNext, currentPage, paginatedData?.lastVisible, queryClient, typeFilter, gradeFilter, subjectFilter, authorFilter, lessonFilter]);
 
     const displayQuestions = useMemo(() => {
         const currentQuestions = paginatedData?.questions || [];
@@ -509,7 +536,7 @@ export default function QuestionsPage() {
         if (!confirmed) return;
         setIsBulkDeleting(true);
         try {
-            const count = await QuestionService.deleteAllMatchingQuestions(typeFilter, subjectFilter, gradeFilter, authorFilter);
+            const count = await QuestionService.deleteAllMatchingQuestions(typeFilter, subjectFilter, gradeFilter, authorFilter, lessonFilter);
             setSelectedIds(new Set());
             queryClient.invalidateQueries({ queryKey: ["admin_questions"] });
             toast.success(`${count} асуулт амжилттай устгагдлаа`);
@@ -554,7 +581,7 @@ export default function QuestionsPage() {
     };
 
     const downloadTemplate = async () => {
-        const headers = ["Анги", "Хичээл", "Сэдэв", "Төрөл", "Оноо", "Асуулт", "Сонголт А", "Сонголт Б", "Сонголт В", "Сонголт Г", "Зөв хариу", "Бодолт", "Зураг"];
+        const headers = ["Анги", "Хичээл", "Сэдэв", "Төрөл", "Оноо", "Асуулт", "Сонголт А", "Сонголт А зураг", "Сонголт Б", "Сонголт Б зураг", "Сонголт В", "Сонголт В зураг", "Сонголт Г", "Сонголт Г зураг", "Зөв хариу", "Бодолт", "Зураг"];
         const csv = Papa.unparse([headers]);
         
         const zip = new JSZip();
@@ -579,13 +606,24 @@ export default function QuestionsPage() {
         
         const imagesFolder = folder?.folder("images");
         invalidQuestions.forEach(row => {
-             const imgName = row["Зураг"]?.trim();
-             if (imgName) {
-                 const blob = parsedImageFiles.get(imgName) || parsedImageFiles.get(`images/${imgName}`) || parsedImageFiles.get(`questions/images/${imgName}`);
-                 if (blob) {
-                     imagesFolder?.file(imgName, blob);
+             const imgs = [row["Зураг"], row["Сонголт А зураг"], row["Сонголт Б зураг"], row["Сонголт В зураг"], row["Сонголт Г зураг"]];
+             imgs.forEach(imgName => {
+                 if (imgName?.trim()) {
+                     const name = imgName.trim();
+                     let blob = parsedImageFiles.get(name) || parsedImageFiles.get(`images/${name}`) || parsedImageFiles.get(`questions/images/${name}`);
+                     if (!blob) {
+                         for (const [path, b] of parsedImageFiles.entries()) {
+                             if (path.endsWith("/" + name) || path === name) {
+                                  blob = b;
+                                  break;
+                             }
+                         }
+                     }
+                     if (blob) {
+                         imagesFolder?.file(name, blob);
+                     }
                  }
-             }
+             });
         });
         
         const content = await zip.generateAsync({ type: "blob" });
@@ -673,19 +711,33 @@ export default function QuestionsPage() {
         try {
             const toSave = await Promise.all(pendingQuestions.map(async (q) => {
                 let imageUrlStr = "";
-                if (q.imageFile) {
-                    const fileExt = q.imageFile.type.split('/')[1] || "png";
+                let uploadedOptionImages: string[] = [];
+
+                const uploadBlob = async (b: Blob) => {
+                    const fileExt = b.type.split('/')[1] || "png";
                     const fileName = `questions/bulk/${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
                     const storageRef = ref(storage, fileName);
-                    await uploadBytes(storageRef, q.imageFile);
-                    imageUrlStr = await getDownloadURL(storageRef);
+                    await uploadBytes(storageRef, b);
+                    return await getDownloadURL(storageRef);
+                };
+
+                if (q.imageFile) {
+                    imageUrlStr = await uploadBlob(q.imageFile);
+                }
+
+                if (q.optionImagesFiles) {
+                    uploadedOptionImages = await Promise.all(q.optionImagesFiles.map(async (blob) => {
+                        if (!blob) return "";
+                        return await uploadBlob(blob);
+                    }));
                 }
                 
                 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-                const { tempId, imageFile, ...rest } = q;
+                const { tempId, imageFile, optionImagesFiles, ...rest } = q;
                 return {
                     ...rest,
                     ...(imageUrlStr ? { imageUrl: imageUrlStr } : {}),
+                    ...(uploadedOptionImages.some(u => u !== "") ? { optionImages: uploadedOptionImages } : {}),
                     createdBy: user.uid
                 };
             }));

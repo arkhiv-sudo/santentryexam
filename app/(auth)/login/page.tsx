@@ -76,7 +76,6 @@ export default function LoginPage() {
 
             setError(message);
             toast.error(message);
-            console.error(err);
         } finally {
             setLoading(false);
         }

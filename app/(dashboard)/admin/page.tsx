@@ -5,9 +5,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Users, FileQuestion, ClipboardList, Settings, Award, BookOpen, ShieldCheck } from "lucide-react";
+import { Users, FileQuestion, ClipboardList, Settings, Award, BookOpen, ShieldCheck, Megaphone, Archive } from "lucide-react";
 import { db } from "@/lib/firebase";
-import { doc, onSnapshot } from "firebase/firestore";
+import { doc } from "firebase/firestore";
 
 const STATS_CACHE_KEY = "admin_stats_cache";
 
@@ -35,29 +35,34 @@ export default function AdminDashboard() {
     useEffect(() => {
         if (profile?.role !== "admin") return;
 
-        // Real-time listener for statistics (unified to system/stats)
-        const docRef = doc(db, "system", "stats");
-        const unsubscribe = onSnapshot(docRef, (docSnap) => {
-            if (docSnap.exists()) {
-                const data = docSnap.data();
-                const newStats = {
-                    totalUsers: data.totalUsers || 0,
-                    totalQuestions: data.totalQuestions || 0,
-                    totalExams: data.totalExams || 0,
-                    totalSubjects: data.totalSubjects || 0,
-                    totalSubmissions: data.totalSubmissions || 0,
-                    totalImages: data.totalImages || 0
-                };
-                setStats(newStats);
-                localStorage.setItem(STATS_CACHE_KEY, JSON.stringify(newStats));
+        const fetchStats = async () => {
+            try {
+                const { getDoc } = await import("firebase/firestore");
+                const docSnap = await getDoc(doc(db, "system", "stats"));
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    const newStats = {
+                        totalUsers: data.totalUsers || 0,
+                        totalQuestions: data.totalQuestions || 0,
+                        totalExams: data.totalExams || 0,
+                        totalSubjects: data.totalSubjects || 0,
+                        totalSubmissions: data.totalSubmissions || 0,
+                        totalImages: data.totalImages || 0
+                    };
+                    setStats(newStats);
+                    localStorage.setItem(STATS_CACHE_KEY, JSON.stringify(newStats));
+                }
+            } catch (error) {
+                console.error("Stats fetch error:", error);
+            } finally {
+                setLoadingStats(false);
             }
-            setLoadingStats(false);
-        }, (error) => {
-            console.error("Stats listener error:", error);
-            setLoadingStats(false);
-        });
+        };
 
-        return () => unsubscribe();
+        fetchStats();
+        // Poll every 60 seconds — stats don't change frequently enough to need real-time
+        const interval = setInterval(fetchStats, 60_000);
+        return () => clearInterval(interval);
     }, [profile]);
 
     if (authLoading) return <div className="p-8 text-center text-slate-500">Уншиж байна...</div>;
@@ -107,6 +112,24 @@ export default function AdminDashboard() {
             gradient: "from-emerald-500 to-teal-500",
             iconBg: "bg-emerald-100",
             iconColor: "text-emerald-600"
+        },
+        {
+            title: "Мэдэгдлийн удирдлага",
+            description: "Нийт эцэг эхчүүдэд харагдах мэдэгдэл оруулах",
+            icon: Megaphone,
+            href: "/admin/announcements",
+            gradient: "from-amber-500 to-orange-500",
+            iconBg: "bg-amber-100",
+            iconColor: "text-amber-600"
+        },
+        {
+            title: "Архив",
+            description: "Архивлагдсан шалгалтууд болон тэдний түүх",
+            icon: Archive,
+            href: "/admin/archives",
+            gradient: "from-rose-500 to-red-500",
+            iconBg: "bg-rose-100",
+            iconColor: "text-rose-600"
         },
         {
             title: "Системийн тохиргоо",

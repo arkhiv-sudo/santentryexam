@@ -13,11 +13,13 @@ import {
     updateDoc, orderBy, onSnapshot
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import { UserProfile, ExamResult, Notification } from "@/types";
+import { UserProfile, ExamResult, Notification, Exam } from "@/types";
+import { Announcement } from "@/lib/services/announcement-service";
 import { ExamService } from "@/lib/services/exam-service";
 import { toast } from "sonner";
 import Link from "next/link";
-import { UserPlus, Key } from "lucide-react";
+import { UserPlus, Key, Megaphone, X } from "lucide-react";
+import Image from "next/image";
 
 export default function ParentDashboard() {
     const { profile } = useAuth();
@@ -25,7 +27,15 @@ export default function ParentDashboard() {
     const [children, setChildren] = useState<UserProfile[]>([]);
     const [results, setResults] = useState<ExamResult[]>([]);
     const [notifications, setNotifications] = useState<Notification[]>([]);
+    const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+    const [selectedAnnouncement, setSelectedAnnouncement] = useState<Announcement | null>(null);
     const [loading, setLoading] = useState(true);
+
+    const [availableExams, setAvailableExams] = useState<Exam[]>([]);
+    const [childRegistrations, setChildRegistrations] = useState<Record<string, string[]>>({});
+    const [registerModalOpen, setRegisterModalOpen] = useState<{exam: Exam, children: UserProfile[]} | null>(null);
+    const [selectedChildIds, setSelectedChildIds] = useState<string[]>([]);
+    const [isRegistering, setIsRegistering] = useState(false);
 
     // ── Load children profiles ──────────────────────────────────────────────
     const loadChildren = useCallback(async () => {
@@ -43,11 +53,6 @@ export default function ParentDashboard() {
                 }
             }
             setChildren(childProfiles);
-
-            // Load results for all children
-            const childIds = childProfiles.map(c => c.uid);
-            const examResults = await ExamService.getResultsForStudents(childIds);
-            setResults(examResults);
         } catch (err) {
             console.error("Failed to load children data:", err);
         } finally {
@@ -58,6 +63,120 @@ export default function ParentDashboard() {
     useEffect(() => {
         loadChildren();
     }, [loadChildren]);
+
+    // ── Load Available Exams & Registrations ──────────────────────────────────
+    useEffect(() => {
+        if (children.length === 0) return;
+
+        const loadExamsAndRegs = async () => {
+            try {
+                // 1. Load active exams
+                const allExams = await ExamService.getAllExams();
+                const published = allExams.filter(e => e.status === "published");
+                
+                // Set of all children's grades
+                const childGrades = new Set(children.map(c => c.grade?.toString() || c.class?.match(/\d+/)?.[0] || ""));
+                
+                // Keep only exams targeting these grades
+                const applicableExams = published.filter(e => childGrades.has(e.grade.toString()));
+                setAvailableExams(applicableExams);
+
+                // 2. Load registrations for each child
+                const regsMap: Record<string, string[]> = {};
+                for (const child of children) {
+                    const regExamIds = await ExamService.getStudentRegistrations(child.uid);
+                    regsMap[child.uid] = regExamIds;
+                }
+                setChildRegistrations(regsMap);
+            } catch (err) {
+                console.error("Failed to load available exams:", err);
+            }
+        };
+
+        loadExamsAndRegs();
+    }, [children]);
+
+    const handleOpenRegisterModal = (exam: Exam) => {
+        const targetGradeStr = exam.grade.toString();
+        const eligible = children.filter(c => {
+            const gradeStr = c.grade?.toString() || c.class?.match(/\d+/)?.[0] || "";
+            return gradeStr === targetGradeStr;
+        });
+        setRegisterModalOpen({ exam, children: eligible });
+        setSelectedChildIds([]);
+    };
+
+    const handleConfirmRegistration = async () => {
+        if (!registerModalOpen || selectedChildIds.length === 0) return;
+        setIsRegistering(true);
+        try {
+            const { exam } = registerModalOpen;
+            for (const childId of selectedChildIds) {
+                await ExamService.registerForExam(childId, exam.id);
+            }
+            toast.success("Шалгалтанд амжилттай бүртгүүллээ!");
+            
+            // update local cache
+            setChildRegistrations(prev => {
+                const next = { ...prev };
+                for (const childId of selectedChildIds) {
+                    if (!next[childId]) next[childId] = [];
+                    next[childId] = [...next[childId], exam.id];
+                }
+                return next;
+            });
+            setRegisterModalOpen(null);
+        } catch (err) {
+            console.error(err);
+            toast.error((err as Error).message || "Бүртгүүлэхэд алдаа гарлаа");
+        } finally {
+            setIsRegistering(false);
+        }
+    };
+
+    // ── Real-time announcements listener ───────────────────────────────────
+    useEffect(() => {
+        const q = query(
+            collection(db, "announcements"),
+            orderBy("createdAt", "desc")
+        );
+        const unsubscribe = onSnapshot(q, snap => {
+            const data: Announcement[] = snap.docs.map(d => ({
+                id: d.id,
+                ...d.data(),
+                createdAt: d.data().createdAt?.toDate ? d.data().createdAt.toDate() : new Date(),
+            } as Announcement));
+            setAnnouncements(data);
+        });
+        return () => unsubscribe();
+    }, []);
+
+    // ── Real-time results listener ─────────────────────────────────────────
+    useEffect(() => {
+        if (children.length === 0) return;
+        const childIds = children.map(c => c.uid);
+        
+        // chunk childIds if needed, but since it's usually < 10, 'in' query works natively.
+        const q = query(
+            collection(db, "exam_results"),
+            where("studentId", "in", childIds),
+            orderBy("gradedAt", "desc")
+        );
+        
+        const unsubscribe = onSnapshot(q, snap => {
+            const newResults: ExamResult[] = snap.docs.map(d => {
+                const data = d.data();
+                return {
+                    id: d.id,
+                    ...data,
+                    gradedAt: data.gradedAt?.toDate ? data.gradedAt.toDate() : new Date(),
+                } as ExamResult;
+            });
+            setResults(newResults);
+        });
+        
+        return () => unsubscribe();
+    }, [children]);
 
     // ── Real-time notifications listener ───────────────────────────────────
     useEffect(() => {
@@ -284,6 +403,40 @@ export default function ParentDashboard() {
                         )}
                     </div>
 
+                    {/* Available Exams Section */}
+                    {availableExams.length > 0 && (
+                        <div>
+                            <h2 className="text-sm flex items-center gap-2 font-bold text-slate-800 uppercase tracking-wider mb-4 mt-8">
+                                <div className="w-1.5 h-4 bg-amber-500 rounded-full" />
+                                Боломжит шалгалтууд
+                            </h2>
+                            <div className="space-y-4">
+                                {availableExams.map(exam => (
+                                    <div key={exam.id} className="p-5 bg-white rounded-3xl border border-slate-100 shadow-sm flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
+                                        <div>
+                                            <h3 className="text-base font-bold text-slate-900">{exam.title}</h3>
+                                            <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-slate-500 mt-2">
+                                                <span className="bg-slate-100 px-3 py-1 rounded-full">{exam.grade}-р анги</span>
+                                                <span className="bg-slate-100 px-3 py-1 rounded-full">{exam.duration} минут</span>
+                                                {exam.scheduledAt && (
+                                                    <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full">
+                                                        {exam.scheduledAt.toLocaleString("mn-MN")}
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <Button 
+                                            onClick={() => handleOpenRegisterModal(exam)}
+                                            className="bg-amber-500 hover:bg-amber-600 text-white rounded-xl shadow-md w-full md:w-auto"
+                                        >
+                                            Бүртгүүлэх
+                                        </Button>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     {/* Results section */}
                     {results.length > 0 && (
                         <div>
@@ -336,12 +489,62 @@ export default function ParentDashboard() {
                     )}
                 </div>
 
-                {/* Right: notifications */}
+                {/* Right: notifications & announcements */}
                 <div>
+                    {/* Announcements section */}
+                    <div className="mb-8">
+                        <h2 className="text-sm flex items-center justify-between font-bold text-slate-800 uppercase tracking-wider mb-4">
+                            <div className="flex items-center gap-2">
+                                <div className="w-1.5 h-4 bg-blue-500 rounded-full" />
+                                Мэдэгдэл / Мэдээлэл
+                            </div>
+                        </h2>
+                        
+                        <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-slate-200">
+                            {announcements.length === 0 ? (
+                                <div className="text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                                    <Megaphone className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                                    <p className="text-slate-400 font-medium text-xs">Мэдэгдэл байхгүй байна</p>
+                                </div>
+                            ) : (
+                                announcements.map(ann => (
+                                    <div
+                                        key={ann.id}
+                                        onClick={() => setSelectedAnnouncement(ann)}
+                                        className="p-4 bg-white rounded-2xl border border-slate-100 shadow-sm cursor-pointer hover:shadow-md hover:border-blue-200 transition-all flex gap-4 overflow-hidden group"
+                                    >
+                                        {ann.imageUrl && (
+                                            <div className="w-16 h-16 rounded-xl overflow-hidden relative shrink-0 bg-slate-100">
+                                                <Image 
+                                                    src={ann.imageUrl} 
+                                                    alt={ann.title} 
+                                                    fill 
+                                                    className="object-cover group-hover:scale-105 transition-transform"
+                                                />
+                                            </div>
+                                        )}
+                                        <div className="flex-1 min-w-0 flex flex-col justify-center">
+                                            <h3 className="text-sm font-bold text-slate-900 truncate mb-1 group-hover:text-blue-600 transition-colors">
+                                                {ann.title}
+                                            </h3>
+                                            <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
+                                                {ann.content}
+                                            </p>
+                                            <p className="text-[10px] text-slate-400 mt-2 font-bold uppercase tracking-wider flex items-center gap-1">
+                                                <Megaphone className="w-3 h-3" />
+                                                {ann.createdAt.toLocaleString("mn-MN")}
+                                            </p>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </div>
+
                     <h2 className="text-sm flex items-center justify-between font-bold text-slate-800 uppercase tracking-wider mb-4">
                         <div className="flex items-center gap-2">
                             <div className={`w-1.5 h-4 rounded-full ${unreadCount > 0 ? 'bg-amber-500' : 'bg-slate-400'}`} />
-                            Мэдэгдлүүд
+                            Хувийн мэдэгдэл
                         </div>
                         {unreadCount > 0 && (
                             <span className="bg-amber-500 text-white text-xs font-black px-2 py-0.5 rounded-full">
@@ -404,6 +607,159 @@ export default function ParentDashboard() {
                     )}
                 </div>
             </div>
+
+            {/* Announcement Modal */}
+            {selectedAnnouncement && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+                    <div 
+                        className="absolute inset-0 z-0" 
+                        onClick={() => setSelectedAnnouncement(null)}
+                    />
+                    <div className="relative z-10 w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in-95 duration-200">
+                        {/* Close button */}
+                        <div className="absolute top-4 right-4 z-20">
+                            <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => setSelectedAnnouncement(null)}
+                                className="h-8 w-8 p-0 rounded-full bg-white/80 backdrop-blur hover:bg-white text-slate-700 shadow-sm"
+                            >
+                                <X className="w-4 h-4" />
+                            </Button>
+                        </div>
+                        
+                        {/* Image header if available */}
+                        {selectedAnnouncement.imageUrl && (
+                            <div className="w-full relative bg-slate-100 shrink-0">
+                                {/* Use responsive aspect ratio but bound the height so it doesn't take the whole screen */}
+                                <div className="relative w-full pb-[56.25%] max-h-[300px]"> 
+                                    <Image 
+                                        src={selectedAnnouncement.imageUrl} 
+                                        alt={selectedAnnouncement.title} 
+                                        fill 
+                                        className="object-contain"
+                                        unoptimized // Because external Firebase Storage URLs aren't optimized by default
+                                    />
+                                </div>
+                            </div>
+                        )}
+                        
+                        {/* Content section */}
+                        <div className="flex-1 overflow-y-auto p-6 md:p-8">
+                            <div className="flex items-center gap-2 mb-3">
+                                <span className="px-2.5 py-1 rounded-full bg-blue-100 text-blue-700 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5">
+                                    <Megaphone className="w-3 h-3" />
+                                    Мэдэгдэл
+                                </span>
+                                <span className="text-xs text-slate-400 font-medium">
+                                    {selectedAnnouncement.createdAt.toLocaleString("mn-MN")}
+                                </span>
+                            </div>
+                            
+                            <h2 className="text-xl md:text-2xl font-black text-slate-900 mb-4 leading-snug">
+                                {selectedAnnouncement.title}
+                            </h2>
+                            
+                            <div className="prose prose-sm md:prose-base prose-slate max-w-none text-slate-600 whitespace-pre-wrap leading-relaxed">
+                                {selectedAnnouncement.content}
+                            </div>
+                        </div>
+                        
+                        {/* Action footer */}
+                        <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex justify-end shrink-0">
+                            <Button 
+                                onClick={() => setSelectedAnnouncement(null)}
+                                className="bg-slate-900 hover:bg-slate-800 text-white rounded-xl px-6"
+                            >
+                                Хаах
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* Registration Modal */}
+            {registerModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+                    <div className="absolute inset-0 z-0" onClick={() => !isRegistering && setRegisterModalOpen(null)} />
+                    <div className="relative z-10 w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                        <div className="p-6 md:p-8">
+                            <h2 className="text-xl font-black text-slate-900 mb-2">Шалгалтанд бүртгүүлэх</h2>
+                            <p className="text-sm text-slate-500 mb-6 font-medium">
+                                <span className="font-bold text-slate-700">{registerModalOpen.exam.title}</span> шалгалтанд дараах хүүхдүүдийг бүртгүүлэх боломжтой:
+                            </p>
+                            
+                            <div className="space-y-3">
+                                {registerModalOpen.children.map(child => {
+                                    const isRegistered = childRegistrations[child.uid]?.includes(registerModalOpen.exam.id);
+                                    const isSelected = selectedChildIds.includes(child.uid);
+                                    
+                                    return (
+                                        <div 
+                                            key={child.uid}
+                                            onClick={() => {
+                                                if (isRegistered || isRegistering) return;
+                                                setSelectedChildIds(prev => 
+                                                    prev.includes(child.uid) ? prev.filter(id => id !== child.uid) : [...prev, child.uid]
+                                                );
+                                            }}
+                                            className={`p-4 rounded-xl border-2 flex items-center justify-between transition-colors ${
+                                                isRegistered 
+                                                    ? "bg-slate-50 border-slate-100 opacity-60 cursor-not-allowed" 
+                                                    : isSelected
+                                                        ? "bg-blue-50 border-blue-500 cursor-pointer text-blue-900"
+                                                        : "bg-white border-slate-200 cursor-pointer hover:border-blue-300"
+                                            }`}
+                                        >
+                                            <div>
+                                                <p className="font-bold text-slate-900">{child.lastName} {child.firstName}</p>
+                                                <p className="text-xs font-bold text-slate-500 mt-0.5">{child.class || "—"} анги</p>
+                                            </div>
+                                            <div>
+                                                {isRegistered ? (
+                                                    <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded flex items-center gap-1 border border-emerald-100">
+                                                        <CheckCircle className="w-3 h-3" />
+                                                        Бүртгэгдсэн
+                                                    </span>
+                                                ) : (
+                                                    <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center ${
+                                                        isSelected ? "bg-blue-500 border-blue-500 text-white" : "border-slate-300 bg-white"
+                                                    }`}>
+                                                        {isSelected && <CheckCircle className="w-3 h-3" />}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                                
+                                {registerModalOpen.children.length === 0 && (
+                                    <div className="text-center p-4 bg-red-50 text-red-600 font-medium rounded-xl text-sm border border-red-100">
+                                        Энэ шалгалтын ангилалд ( {registerModalOpen.exam.grade}-р анги ) тохирох хүүхэд байхгүй байна.
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                        
+                        <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex gap-3 justify-end items-center shrink-0">
+                            <Button 
+                                variant="outline"
+                                onClick={() => setRegisterModalOpen(null)}
+                                disabled={isRegistering}
+                                className="rounded-xl border-slate-200 hover:bg-slate-100 text-slate-700 font-bold"
+                            >
+                                Цуцлах
+                            </Button>
+                            <Button 
+                                onClick={handleConfirmRegistration}
+                                disabled={isRegistering || selectedChildIds.length === 0 || registerModalOpen.children.length === 0}
+                                className="bg-blue-600 hover:bg-blue-700 text-white rounded-xl min-w-[120px] font-bold shadow-md"
+                            >
+                                {isRegistering ? <Loader2 className="w-4 h-4 animate-spin" /> : "Бүртгүүлэх"}
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
