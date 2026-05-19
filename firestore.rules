@@ -17,9 +17,13 @@ service cloud.firestore {
         studentId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.children;
     }
 
-    // Users — each user can only read their own profile; admins can read all
+    // Users — each user can read their own profile; admins/teachers read all.
+    // Parents can read their own children's profiles (via the children array).
     match /users/{userId} {
-      allow read: if isAdmin() || (isAuth() && request.auth.uid == userId);
+      allow read: if isAdmin()
+                   || isTeacher()
+                   || (isAuth() && request.auth.uid == userId)
+                   || (isParent() && userId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.children);
       allow create: if isAuth() && request.auth.uid == userId;
       // FIX 10: Users may update their own doc but cannot change privileged fields
       // (role, status, parentId, children, studentCode). Admins can update anything.
@@ -164,16 +168,18 @@ service cloud.firestore {
 
     // Exam Support Tickets (3-way Chat: Student ↔ Admin ↔ Teacher)
     // FIX 31: TicketService.createTicket() uses serverTimestamp() — enforce server time on createdAt.
+    // ISSUE E: Tighten student update to only allow message append (no status/studentId tamper).
     match /exam_tickets/{ticketId} {
       allow read: if isAdmin() || isTeacher() || (isStudent() && resource.data.studentId == request.auth.uid);
       // Only students can create a new ticket for themselves
       allow create: if isStudent()
                     && request.resource.data.studentId == request.auth.uid
                     && request.resource.data.createdAt == request.time;
-      // Admins and teachers can update ticket (change status, forward, etc.)
-      // Students can also update (to add messages via arrayUnion in the service)
+      // Admins and teachers can update ticket fully (change status, forward, etc.)
+      // Students can only append messages (messages + updatedAt fields only).
       allow update: if isAdmin() || isTeacher()
-        || (isStudent() && resource.data.studentId == request.auth.uid);
+        || (isStudent() && resource.data.studentId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['messages', 'updatedAt']));
       allow delete: if isAdmin();
     }
 

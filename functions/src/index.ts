@@ -367,22 +367,29 @@ export const onExamDelete = functions.firestore
         const examId = context.params.examId;
         await updateStat("totalExams", -1);
 
-        // Cascade delete registrations, submissions, exam_results, and exam_answers
-        const collectionsToDeleteFrom = ["registrations", "submissions", "exam_results"];
-        
+        // ISSUE A: Cascade delete ALL related data — registrations, submissions,
+        // exam_results, exam_tickets, question_reports, retake_requests, and
+        // exam_answers — so deleting an exam leaves no orphans in Firestore.
+        const collectionsToDeleteFrom = [
+            "registrations",
+            "submissions",
+            "exam_results",
+            "exam_tickets",
+            "question_reports",
+            "retake_requests",
+        ];
+
         for (const col of collectionsToDeleteFrom) {
             const querySnap = await db.collection(col).where("examId", "==", examId).get();
             if (!querySnap.empty) {
-                // Batch delete in chunks of 500
-                const chunks = [];
-                for (let i = 0; i < querySnap.docs.length; i += 500) {
-                    chunks.push(querySnap.docs.slice(i, i + 500));
-                }
-                for (const chunk of chunks) {
+                // Batch delete in chunks of 400 (under Firestore's 500-op cap)
+                for (let i = 0; i < querySnap.docs.length; i += 400) {
+                    const chunk = querySnap.docs.slice(i, i + 400);
                     const batch = db.batch();
                     chunk.forEach(doc => batch.delete(doc.ref));
                     await batch.commit();
                 }
+                console.log(`Deleted ${querySnap.docs.length} docs from ${col} for exam ${examId}`);
             }
         }
 
@@ -391,8 +398,8 @@ export const onExamDelete = functions.firestore
         if (ansDoc.exists) {
             await ansDoc.ref.delete();
         }
-        
-        console.log(`Deleted all related data for exam ${examId}`);
+
+        console.log(`Cascade-deleted all related data for exam ${examId}`);
     });
 
 /**

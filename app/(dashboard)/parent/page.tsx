@@ -158,30 +158,50 @@ export default function ParentDashboard() {
     }, []);
 
     // ── Real-time results listener ─────────────────────────────────────────
+    // ISSUE B: Firestore 'in' query supports max 10 values, so we chunk childIds
+    // and merge snapshots from multiple listeners for parents with >10 children.
     useEffect(() => {
         if (children.length === 0) return;
         const childIds = children.map(c => c.uid);
-        
-        // chunk childIds if needed, but since it's usually < 10, 'in' query works natively.
-        const q = query(
-            collection(db, "exam_results"),
-            where("studentId", "in", childIds),
-            orderBy("gradedAt", "desc")
-        );
-        
-        const unsubscribe = onSnapshot(q, snap => {
-            const newResults: ExamResult[] = snap.docs.map(d => {
-                const data = d.data();
-                return {
-                    id: d.id,
-                    ...data,
-                    gradedAt: data.gradedAt?.toDate ? data.gradedAt.toDate() : new Date(),
-                } as ExamResult;
+
+        // Chunk into groups of 10 (Firestore 'in' limit)
+        const chunks: string[][] = [];
+        for (let i = 0; i < childIds.length; i += 10) {
+            chunks.push(childIds.slice(i, i + 10));
+        }
+
+        // Per-chunk results store, merged into a single sorted array
+        const chunkResults: ExamResult[][] = chunks.map(() => []);
+        const mergeAndSet = () => {
+            const merged: ExamResult[] = ([] as ExamResult[]).concat(...chunkResults);
+            merged.sort((a, b) => {
+                const ad = a.gradedAt instanceof Date ? a.gradedAt.getTime() : 0;
+                const bd = b.gradedAt instanceof Date ? b.gradedAt.getTime() : 0;
+                return bd - ad;
             });
-            setResults(newResults);
+            setResults(merged);
+        };
+
+        const unsubs = chunks.map((chunk, idx) => {
+            const q = query(
+                collection(db, "exam_results"),
+                where("studentId", "in", chunk),
+                orderBy("gradedAt", "desc")
+            );
+            return onSnapshot(q, snap => {
+                chunkResults[idx] = snap.docs.map(d => {
+                    const data = d.data();
+                    return {
+                        id: d.id,
+                        ...data,
+                        gradedAt: data.gradedAt?.toDate ? data.gradedAt.toDate() : new Date(),
+                    } as ExamResult;
+                });
+                mergeAndSet();
+            });
         });
-        
-        return () => unsubscribe();
+
+        return () => unsubs.forEach(u => u());
     }, [children]);
 
     // ── Real-time notifications listener ───────────────────────────────────

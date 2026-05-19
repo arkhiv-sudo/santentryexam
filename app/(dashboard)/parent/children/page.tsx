@@ -30,13 +30,19 @@ export default function ChildrenPage() {
                     if (!cancelled) setChildren([]);
                     return;
                 }
-                const q = query(
-                    collection(db, "users"),
-                    where("uid", "in", childIds.slice(0, 10))
-                );
-                const snap = await getDocs(q);
+                // ISSUE B: Chunk into groups of 10 (Firestore 'in' query limit)
+                const chunks: string[][] = [];
+                for (let i = 0; i < childIds.length; i += 10) {
+                    chunks.push(childIds.slice(i, i + 10));
+                }
+                const allChildren: UserProfile[] = [];
+                for (const chunk of chunks) {
+                    const q = query(collection(db, "users"), where("uid", "in", chunk));
+                    const snap = await getDocs(q);
+                    snap.docs.forEach(d => allChildren.push(d.data() as UserProfile));
+                }
                 if (cancelled) return;
-                setChildren(snap.docs.map(d => d.data() as UserProfile));
+                setChildren(allChildren);
             } catch (err: unknown) {
                 if (cancelled) return;
                 console.error("[fetchChildren]", err);
