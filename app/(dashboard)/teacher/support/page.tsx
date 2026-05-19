@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { collection, query, where, onSnapshot, getDocs } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/components/AuthProvider";
@@ -20,6 +20,10 @@ export default function TeacherSupportPage() {
     const [replyMessage, setReplyMessage] = useState("");
     const [loading, setLoading] = useState(true);
 
+    // FIX 16: Use a ref to hold the unsubscribe function so the async setup can
+    // safely hand it off to the cleanup without relying on a Promise-based return.
+    const unsubRef = useRef<(() => void) | null>(null);
+
     useEffect(() => {
         if (!authLoading && profile?.role !== "teacher") {
             router.push("/");
@@ -30,12 +34,16 @@ export default function TeacherSupportPage() {
     useEffect(() => {
         if (!profile?.uid) return;
 
+        let mounted = true;
+
         const setupListener = async () => {
             try {
                 // 1. Fetch exams created by this teacher
                 const examsQ = query(collection(db, "exams"), where("createdBy", "==", profile.uid));
                 const examsSnap = await getDocs(examsQ);
                 const teacherExamIds = examsSnap.docs.map(d => d.id);
+
+                if (!mounted) return;
 
                 if (teacherExamIds.length === 0) {
                     setLoading(false);
@@ -44,11 +52,12 @@ export default function TeacherSupportPage() {
 
                 // 2. Listen to tickets that are forwarded
                 const q = query(
-                    collection(db, "exam_tickets"), 
+                    collection(db, "exam_tickets"),
                     where("status", "==", "forwarded_to_teacher")
                 );
 
                 const unsubscribe = onSnapshot(q, (snapshot) => {
+                    if (!mounted) return;
                     const t: ExamTicket[] = [];
                     snapshot.forEach(doc => {
                         const data = { id: doc.id, ...doc.data() } as ExamTicket;
@@ -56,32 +65,40 @@ export default function TeacherSupportPage() {
                             t.push(data);
                         }
                     });
-                    
+
                     t.sort((a, b) => {
                         const aTime = a.updatedAt ? (a.updatedAt as unknown as { seconds: number }).seconds : 0;
                         const bTime = b.updatedAt ? (b.updatedAt as unknown as { seconds: number }).seconds : 0;
                         return bTime - aTime;
                     });
-                    
+
                     setTickets(t);
                     setLoading(false);
                 }, (err) => {
                     console.error("Error listening to tickets", err);
-                    setLoading(false);
+                    if (mounted) setLoading(false);
                 });
 
-                return unsubscribe;
+                if (mounted) {
+                    unsubRef.current = unsubscribe;
+                } else {
+                    // Component already unmounted while we were setting up — clean up immediately
+                    unsubscribe();
+                }
             } catch (err) {
                 console.error("Failed to setup listener", err);
-                setLoading(false);
+                if (mounted) setLoading(false);
             }
         };
 
-        const cleanupPromise = setupListener();
+        setupListener();
+
         return () => {
-            cleanupPromise.then(unsub => {
-                if (typeof unsub === 'function') unsub();
-            }).catch(() => {});
+            mounted = false;
+            if (unsubRef.current) {
+                unsubRef.current();
+                unsubRef.current = null;
+            }
         };
     }, [profile?.uid]);
 

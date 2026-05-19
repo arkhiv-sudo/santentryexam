@@ -5,6 +5,23 @@ import { useState, useEffect } from "react";
 // Cache offset globally so we only fetch it once per session
 let globalTimeOffset: number | null = null;
 
+// Track whether the offset has been resolved from the server
+let offsetReady = false;
+let offsetReadyResolvers: (() => void)[] = [];
+
+/**
+ * Resolves once the server time offset has been fetched.
+ * Await this before calling getServerTimeValue() if you need the first
+ * call to be accurate (e.g., when computing initial timeLeft on page load).
+ */
+export const offsetReadyPromise = new Promise<void>(resolve => {
+    offsetReadyResolvers.push(resolve);
+});
+
+// NTP midpoint formula: offset = serverTime - clientMidpoint
+// clientMidpoint = (start + end) / 2 = end - latency
+// offset = serverTime - (end - latency) = serverTime + latency - end
+// getServerTimeValue() = Date.now() + offset ≈ actual server time
 export function getServerTimeValue(): number {
     return Date.now() + (globalTimeOffset || 0);
 }
@@ -32,6 +49,14 @@ export function useServerTime() {
                 } catch {
                     globalTimeOffset = 0; // Fallback to local time
                 }
+            }
+
+            // Signal that the offset is now resolved (either freshly fetched or already cached).
+            // Guard with `offsetReady` so we only resolve the promise once.
+            if (!offsetReady) {
+                offsetReady = true;
+                offsetReadyResolvers.forEach(r => r());
+                offsetReadyResolvers = [];
             }
 
             if (mounted) {

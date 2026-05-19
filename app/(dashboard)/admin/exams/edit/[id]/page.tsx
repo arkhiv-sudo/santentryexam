@@ -42,6 +42,7 @@ export default function EditExamPage() {
         grade: "",
         maxQuestions: "30",
         passingScore: "0",
+        maxAttempts: "", // FIX F1: empty = unlimited
         status: "draft" as Exam["status"]
     });
 
@@ -84,6 +85,7 @@ export default function EditExamPage() {
                 grade: exam.grade,
                 maxQuestions: exam.maxQuestions.toString(),
                 passingScore: (exam.passingScore ?? 0).toString(),
+                maxAttempts: exam.maxAttempts ? exam.maxAttempts.toString() : "",
                 status: exam.status
             });
 
@@ -137,12 +139,16 @@ export default function EditExamPage() {
             const counts = await QuestionService.getQuestionCounts(formData.grade, subjectIds);
             setAvailableCounts(counts);
 
-            // Sync distribution with new subjects list (preserve existing counts)
-            const newDist: Record<string, number> = { ...distribution };
-            data.forEach(s => {
-                if (newDist[s.id] === undefined) newDist[s.id] = 0;
+            // FIX 21: Reset distribution to ONLY include subjects for the current grade.
+            // Carrying over IDs from a previously selected grade could silently include
+            // subjects that don't belong to the new grade's pool.
+            const freshDist: Record<string, number> = {};
+            data.forEach((s: Subject) => {
+                // Preserve any count that was already set for this subject, but do NOT
+                // bring in counts for subjects that don't exist in this grade's list.
+                freshDist[s.id] = distribution[s.id] ?? 0;
             });
-            setDistribution(newDist);
+            setDistribution(freshDist);
 
             setStep(2);
         } catch (error) {
@@ -188,6 +194,7 @@ export default function EditExamPage() {
                 grade: formData.grade,
                 maxQuestions: parseInt(formData.maxQuestions),
                 passingScore: parseInt(formData.passingScore),
+                ...(formData.maxAttempts ? { maxAttempts: parseInt(formData.maxAttempts) } : {}),
                 status: formData.status,
                 subjectDistribution
             });
@@ -332,17 +339,31 @@ export default function EditExamPage() {
                                 </div>
                             </div>
 
-                            <div className="space-y-2">
-                                <label className="text-sm font-semibold text-slate-700">Төлөв</label>
-                                <Select
-                                    value={formData.status}
-                                    onChange={(e) => setFormData({ ...formData, status: e.target.value as Exam["status"] })}
-                                    disabled={isPublished}
-                                >
-                                    <option value="draft">Ноорог (Draft)</option>
-                                    <option value="published">Нийтлэх (Published)</option>
-                                    <option value="archived">Архивлах (Archived)</option>
-                                </Select>
+                            <div className="grid md:grid-cols-2 gap-6">
+                                <div className="space-y-2">
+                                    <label className="text-sm font-semibold text-slate-700">Төлөв</label>
+                                    <Select
+                                        value={formData.status}
+                                        onChange={(e) => setFormData({ ...formData, status: e.target.value as Exam["status"] })}
+                                        disabled={isPublished}
+                                    >
+                                        <option value="draft">Ноорог (Draft)</option>
+                                        <option value="published">Нийтлэх (Published)</option>
+                                        <option value="archived">Архивлах (Archived)</option>
+                                    </Select>
+                                </div>
+                                {/* FIX F1: Optional limit on retake attempts */}
+                                <div className="space-y-2">
+                                    <label className="text-sm font-semibold text-slate-700">Дээд тоо (хязгааргүй бол хоосон үлдээ)</label>
+                                    <Input
+                                        type="number"
+                                        min="1"
+                                        placeholder="Жнь: 2"
+                                        value={formData.maxAttempts}
+                                        onChange={(e) => setFormData({ ...formData, maxAttempts: e.target.value })}
+                                    />
+                                    <p className="text-xs text-slate-500">Анхны өгөлт + зөвшөөрөгдсөн дахин өгөлтийн нийт тоо.</p>
+                                </div>
                             </div>
                         </CardContent>
                     </Card>
@@ -353,7 +374,7 @@ export default function EditExamPage() {
                         </Link>
                         <Button
                             onClick={handleNextStep}
-                            disabled={loadingSubjects || (isPublished && formData.grade !== "")} // If published, probably stop them, but actually they can just view step 2. Let's just allow viewing.
+                            disabled={loadingSubjects}
                             className="bg-blue-600 text-white hover:bg-blue-700 gap-2"
                         >
                             {loadingSubjects ? "Уншиж байна..." : (

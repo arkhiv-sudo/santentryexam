@@ -1,22 +1,34 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    // Questions images — only admin/teacher write, all authenticated read
+    // Uses Firebase Auth custom claims (request.auth.token.role) — no firestore.get() needed.
+    // Custom claims are set by Cloud Functions (onUserCreate) and /api/admin/set-role.
+
+    function isAuth() { return request.auth != null; }
+    function isAdmin() { return isAuth() && request.auth.token.role == 'admin'; }
+    function isTeacher() { return isAuth() && request.auth.token.role == 'teacher'; }
+    function isAdminOrTeacher() { return isAdmin() || isTeacher(); }
+
+    // Question images — admin/teacher can write, all authenticated users can read
     match /questions/{allPaths=**} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null
-        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role in ['admin', 'teacher'];
+      allow read: if isAuth();
+      // Size limit: 20MB max (matches /api/upload validation)
+      allow write: if isAdminOrTeacher()
+        && (request.resource == null || request.resource.size < 20 * 1024 * 1024);
     }
-    // Profile pictures — each user can write their own, all can read
+
+    // Profile pictures — each user can write their own, all authenticated can read
     match /profiles/{userId}/{allPaths=**} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == userId;
+      allow read: if isAuth();
+      allow write: if isAuth() && request.auth.uid == userId
+        && (request.resource == null || request.resource.size < 5 * 1024 * 1024);
     }
-    // Catch-all: authenticated read, admin-only write for anything else
+
+    // Catch-all: authenticated read, admin-only write
     match /{allPaths=**} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null
-        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      allow read: if isAuth();
+      allow write: if isAdmin()
+        && (request.resource == null || request.resource.size < 50 * 1024 * 1024);
     }
   }
 }

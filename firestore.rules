@@ -6,14 +6,11 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function role() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
-    }
-
-    function isAdmin() { return isAuth() && role() == 'admin'; }
-    function isTeacher() { return isAuth() && role() == 'teacher'; }
-    function isStudent() { return isAuth() && role() == 'student'; }
-    function isParent() { return isAuth() && role() == 'parent'; }
+    function isAdmin() { return isAuth() && request.auth.token.role == 'admin'; }
+    function isTeacher() { return isAuth() && request.auth.token.role == 'teacher'; }
+    function isStudent() { return isAuth() && request.auth.token.role == 'student'; }
+    function isParent() { return isAuth() && request.auth.token.role == 'parent'; }
+    function isAdminOrTeacher() { return isAdmin() || isTeacher(); }
 
     function isParentOf(studentId) {
       return isParent() &&
@@ -24,7 +21,11 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isAdmin() || (isAuth() && request.auth.uid == userId);
       allow create: if isAuth() && request.auth.uid == userId;
-      allow update: if (isAuth() && request.auth.uid == userId) || isAdmin();
+      // FIX 10: Users may update their own doc but cannot change privileged fields
+      // (role, status, parentId, children, studentCode). Admins can update anything.
+      allow update: if (isAuth() && request.auth.uid == userId
+                        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'status', 'parentId', 'children', 'studentCode']))
+                      || isAdmin();
       allow delete: if isAdmin();
     }
 
@@ -43,24 +44,36 @@ service cloud.firestore {
     }
 
     // Registrations
+    // FIX 18: Tighter create payload validation (students only — parent-created
+    // registrations still go through API/Admin SDK paths). FIX 20: students may
+    // only update a constrained whitelist of fields; admins keep full control
+    // for extendedTime, retake resets, etc.
     match /registrations/{registrationId} {
       allow read: if isAdmin() || isTeacher()
         || (isStudent() && resource.data.studentId == request.auth.uid)
         || (isParent() && isParentOf(resource.data.studentId));
-      allow create: if (isStudent() && request.resource.data.studentId == request.auth.uid) ||
-                       (isParent() && isParentOf(request.resource.data.studentId));
-      allow update: if isAdmin() || (isStudent() && resource.data.studentId == request.auth.uid);
+      allow create: if (isStudent()
+                        && request.resource.data.studentId == request.auth.uid
+                        && request.resource.data.keys().hasOnly(['studentId','examId','status','registeredAt','violations'])
+                        && request.resource.data.violations == 0
+                        && request.resource.data.status == 'registered')
+                    || (isParent() && isParentOf(request.resource.data.studentId));
+      allow update: if isAdmin()
+                    || (isStudent()
+                        && resource.data.studentId == request.auth.uid
+                        && request.resource.data.diff(resource.data).affectedKeys()
+                             .hasOnly(['status','startedAt','completedAt','draftAnswers','violations','forceSubmitted','ipAddress']));
       allow delete: if isAdmin();
     }
 
-    // Submissions
+    // Submissions — FIX 18: block direct client writes entirely. The
+    // `/api/exam/[examId]/submit` route uses the Admin SDK which bypasses
+    // these rules; rules exist only to guard against direct client access.
     match /submissions/{submissionId} {
       allow read: if isAdmin() || isTeacher()
         || (isStudent() && resource.data.studentId == request.auth.uid)
         || (isParent() && isParentOf(resource.data.studentId));
-      allow create: if isStudent() && request.resource.data.studentId == request.auth.uid;
-      allow update: if isAdmin();
-      allow delete: if isAdmin();
+      allow create, update, delete: if false;
     }
 
     // Exam Results
@@ -88,17 +101,26 @@ service cloud.firestore {
     }
 
     // Notifications
+    // FIX 25: Students must not write notifications directly — Cloud Functions /
+    // server-side API routes handle creation. Only admins can create notifications.
+    // FIX 19: Recipients may only flip `read` / `readAt`; nothing else.
+    // FIX 31: Enforce server time on createdAt — admin client writes use serverTimestamp().
     match /notifications/{notifId} {
       allow read: if isAuth() && resource.data.recipientId == request.auth.uid;
-      allow update: if isAuth() && resource.data.recipientId == request.auth.uid;
-      allow create: if isAdmin() || isStudent();
+      allow update: if isAuth()
+                    && resource.data.recipientId == request.auth.uid
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'readAt']);
+      allow create: if isAdmin()
+                    && request.resource.data.createdAt == request.time;
       allow delete: if isAdmin();
     }
 
     // Corrections
+    // FIX 31: Teacher client writes use serverTimestamp() — enforce server time on createdAt.
     match /corrections/{correctionId} {
       allow read: if isAdmin() || isTeacher();
-      allow create: if isTeacher();
+      allow create: if isTeacher()
+                    && request.resource.data.createdAt == request.time;
       allow update: if isAdmin();
       allow delete: if isAdmin();
     }
@@ -139,10 +161,13 @@ service cloud.firestore {
     }
 
     // Exam Support Tickets (3-way Chat: Student ↔ Admin ↔ Teacher)
+    // FIX 31: TicketService.createTicket() uses serverTimestamp() — enforce server time on createdAt.
     match /exam_tickets/{ticketId} {
       allow read: if isAdmin() || isTeacher() || (isStudent() && resource.data.studentId == request.auth.uid);
       // Only students can create a new ticket for themselves
-      allow create: if isStudent() && request.resource.data.studentId == request.auth.uid;
+      allow create: if isStudent()
+                    && request.resource.data.studentId == request.auth.uid
+                    && request.resource.data.createdAt == request.time;
       // Admins and teachers can update ticket (change status, forward, etc.)
       // Students can also update (to add messages via arrayUnion in the service)
       allow update: if isAdmin() || isTeacher()
@@ -155,6 +180,31 @@ service cloud.firestore {
       allow read: if isAdmin() || (isAuth() && resource.data.studentId == request.auth.uid);
       allow create: if isAuth() && request.resource.data.studentId == request.auth.uid;
       allow update, delete: if isAdmin();
+    }
+
+    // FIX E3: Question Reports — students flag problematic questions during an exam.
+    // FIX 31: Client uses serverTimestamp() — enforce server time on createdAt.
+    match /question_reports/{reportId} {
+      allow read: if isAdmin() || isTeacher();
+      allow create: if isAuth()
+                    && request.resource.data.studentId == request.auth.uid
+                    && request.resource.data.createdAt == request.time;
+      allow update, delete: if isAdmin();
+    }
+
+    // FIX 32: Admin audit log — append-only, written exclusively by the Admin SDK
+    // (lib/audit-log.ts). Clients cannot create/update/delete; admins can read.
+    match /admin_audit/{entryId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // FIX 50: System logs — any authenticated client can write an error log,
+    // only admins can read. Updates/deletes are forbidden.
+    match /system_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAuth();
+      allow update, delete: if false;
     }
   }
 }

@@ -1,10 +1,22 @@
 import { adminAuth } from "@/lib/firebase-admin";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
+import { safeApiError } from "@/lib/utils";
+import { checkOrigin } from "@/lib/csrf";
+import { rateLimit, getRateLimitKey } from "@/lib/rate-limit";
 
-export async function POST(req: NextRequest) {
+export async function POST(request: NextRequest) {
+    const origin = checkOrigin(request);
+    if (!origin.ok) return origin.response;
+
+    const key = getRateLimitKey(request, 'login');
+    const limit = rateLimit(key, 10, 60 * 1000); // 10 login attempts per minute per IP
+    if (!limit.allowed) {
+        return NextResponse.json({ error: 'Хэт олон оролдлого. 1 минутын дараа дахин оролдоно уу.' }, { status: 429 });
+    }
+
     try {
-        const { idToken } = await req.json();
+        const { idToken } = await request.json();
 
         if (!idToken) {
             return NextResponse.json({ error: "Missing ID token" }, { status: 400 });
@@ -26,17 +38,19 @@ export async function POST(req: NextRequest) {
             sameSite: "lax",
         });
 
-        // Also set a visible 'role' cookie for client-side/middleware redirection convenience
-        // (This is not used for security, only for routing)
+        // Role cookie — used by middleware (request.cookies access works with httpOnly)
         const role = decodedToken.role || 'student';
         (await cookies()).set("role", role, {
-            maxAge: expiresIn,
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "lax",
             path: "/",
+            maxAge: 60 * 60 * 24 * 5, // 5 days like session
         });
 
         return NextResponse.json({ status: "success", role });
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Session creation error:", error);
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        return NextResponse.json({ error: safeApiError(error, "Unauthorized") }, { status: 401 });
     }
 }

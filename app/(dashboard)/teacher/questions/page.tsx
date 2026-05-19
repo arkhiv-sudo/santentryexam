@@ -172,8 +172,9 @@ export default function TeacherQuestionsPage() {
             await QuestionService.deleteQuestion(id);
             queryClient.invalidateQueries({ queryKey: ["questions"] });
             toast.success("Асуулт амжилттай устгагдлаа");
-        } catch {
-            toast.error("Асуултыг устгахад алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[teacher.handleDelete]", err);
+            toast.error(err instanceof Error ? err.message : "Асуултыг устгахад алдаа гарлаа");
         }
     };
 
@@ -193,8 +194,9 @@ export default function TeacherQuestionsPage() {
             toast.success("Засах санал амжилттай илгээгдлээ!");
             setCorrectionQuestion(null);
             setCorrectionNote("");
-        } catch {
-            toast.error("Илгээхэд алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[handleSubmitCorrection]", err);
+            toast.error(err instanceof Error ? err.message : "Илгээхэд алдаа гарлаа");
         } finally {
             setSubmittingCorrection(false);
         }

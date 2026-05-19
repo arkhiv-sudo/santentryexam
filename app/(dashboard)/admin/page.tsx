@@ -5,9 +5,10 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Users, FileQuestion, ClipboardList, Settings, Award, BookOpen, ShieldCheck, Megaphone, Archive } from "lucide-react";
+import { Users, FileQuestion, ClipboardList, Settings, Award, BookOpen, ShieldCheck, Megaphone, Archive, FileClock } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { doc } from "firebase/firestore";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 const STATS_CACHE_KEY = "admin_stats_cache";
 
@@ -132,6 +133,15 @@ export default function AdminDashboard() {
             iconColor: "text-rose-600"
         },
         {
+            title: "Аудит лог",
+            description: "Админ үйлдлүүдийн түүхийг харах",
+            icon: FileClock,
+            href: "/admin/audit",
+            gradient: "from-indigo-500 to-blue-500",
+            iconBg: "bg-indigo-100",
+            iconColor: "text-indigo-600"
+        },
+        {
             title: "Системийн тохиргоо",
             description: "Ерөнхий тохиргоо болон параметрүүд",
             icon: Settings,
@@ -166,6 +176,7 @@ export default function AdminDashboard() {
             </div>
 
             {/* Stats Cards */}
+            <ErrorBoundary label="Статистик ачаалахад алдаа">
             <div className="grid gap-4 md:grid-cols-3">
                 {statsCards.map((stat, idx) => {
                     const Icon = stat.icon;
@@ -186,6 +197,7 @@ export default function AdminDashboard() {
                     );
                 })}
             </div>
+            </ErrorBoundary>
 
             {/* Main Navigation Cards */}
             <div className="space-y-4">

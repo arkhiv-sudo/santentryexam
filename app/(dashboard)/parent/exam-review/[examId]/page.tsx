@@ -8,6 +8,8 @@ import { Card, CardContent, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Loader2, ArrowLeft, FileText } from "lucide-react";
 import MathRenderer from "@/components/exam/MathRenderer";
+import { useAuth } from "@/components/AuthProvider";
+import { toast } from "sonner";
 
 interface GradedAnswer {
     studentAnswer: string;
@@ -30,6 +32,7 @@ export default function ParentExamReviewPage() {
     const params = useParams();
     const searchParams = useSearchParams();
     const router = useRouter();
+    const { profile } = useAuth();
 
     const examId = params.examId as string;
     const studentId = searchParams.get("studentId");
@@ -46,6 +49,14 @@ export default function ParentExamReviewPage() {
             return;
         }
 
+        // Ownership check: parent can only view their own children's data
+        if (profile?.children && !profile.children.includes(studentId)) {
+            toast.error('Энэ студентийн мэдээлэлд хандах эрх байхгүй');
+            router.push('/parent');
+            return;
+        }
+
+        let cancelled = false;
         const fetchReviewData = async () => {
             try {
                 // 1. Fetch exam for question details
@@ -53,6 +64,7 @@ export default function ParentExamReviewPage() {
                 if (!examDoc.exists()) {
                     throw new Error("Шалгалт олдсонгүй");
                 }
+                if (cancelled) return;
                 const examData = examDoc.data();
                 setExamData(examData as import("@/types").Exam);
 
@@ -63,24 +75,29 @@ export default function ParentExamReviewPage() {
                     where("studentId", "==", studentId)
                 );
                 const querySnapshot = await getDocs(q);
-                
+
                 if (querySnapshot.empty) {
                     throw new Error("Сурагчийн хариулт олдсонгүй.");
                 }
 
+                if (cancelled) return;
                 // Just take the first valid submission (should be only one per student anyway)
                 setSubmissionData(querySnapshot.docs[0].data() as SubmissionData);
 
             } catch (err: unknown) {
-                console.error("Failed to load review data", err);
-                setError(err instanceof Error ? err.message : "Хариулт уншихад алдаа гарлаа");
+                if (cancelled) return;
+                console.error("[fetchReviewData]", err);
+                const msg = err instanceof Error ? err.message : "Хариулт уншихад алдаа гарлаа";
+                setError(msg);
+                toast.error(msg);
             } finally {
-                setLoading(false);
+                if (!cancelled) setLoading(false);
             }
         };
 
         fetchReviewData();
-    }, [examId, studentId]);
+        return () => { cancelled = true; };
+    }, [examId, studentId, profile, router]);
 
     if (loading) {
         return (

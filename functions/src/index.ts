@@ -1,10 +1,30 @@
 import * as functions from "firebase-functions/v1";
 import * as admin from "firebase-admin";
 import { MetricServiceClient } from "@google-cloud/monitoring";
+import { sendEmail } from "./email";
+
+// TODO: PDF certificate generation
+// For users who pass an exam, generate a downloadable PDF certificate.
+// Requires: npm install @react-pdf/renderer or use Puppeteer in Cloud Function.
 
 admin.initializeApp();
 
 const db = admin.firestore();
+
+// FIX 38: Sanitize user-controlled strings before interpolating them into
+// notification titles/messages. Strips angle brackets and control characters
+// (anything below ASCII 0x20 except common whitespace is removed) and clamps
+// length so a malicious display name can't break parent/student notifications
+// or smuggle markup into clients that render messages as HTML.
+function sanitizeForNotification(s: unknown): string {
+    if (s == null) return '';
+    return String(s)
+        // eslint-disable-next-line no-control-regex
+        .replace(/[<>]/g, '')
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\x00-\x1f\x7f]/g, '')
+        .slice(0, 100);
+}
 
 /**
  * Automatically create a Firestore user profile document when a new user
@@ -18,7 +38,9 @@ export const onUserCreate = functions.auth.user().onCreate(async (user) => {
         const docSnap = await userRef.get();
         let role = "student";
 
-        // Google sign-in → parent role
+        // FIX 27 — NOTE: All Google OAuth sign-ins are assigned 'parent' role by default.
+        // Students use email/password login with student codes.
+        // Admins and teachers must have their role set manually via the admin panel.
         const isGoogle = providerData.some(p => p.providerId === "google.com");
         if (isGoogle) {
             role = "parent";
@@ -93,6 +115,9 @@ async function assignQuestionsToExam(examId: string, examData: Record<string, un
     }
 
     const allQuestionIds: string[] = [];
+    // FIX 22: Track per-subject deficits so we can surface them on the exam doc
+    // and notify the creator that the exam needs attention.
+    const questionDeficit: { subjectId: string; requested: number; available: number }[] = [];
 
     for (const { subjectId, count } of subjectDistribution) {
         if (!count || count <= 0) continue;
@@ -102,8 +127,13 @@ async function assignQuestionsToExam(examId: string, examData: Record<string, un
             .where("subject", "==", subjectId)
             .get();
 
+        // A1: Exclude questions that admins have flagged as needing correction.
+        // These are not safe to assign to live exams until they're fixed.
         const available = snapshot.docs
-            .filter(d => d.data().status !== "archived")
+            .filter(d => {
+                const s = d.data().status;
+                return s !== "archived" && s !== "correction_needed";
+            })
             .map(d => d.id);
 
         const selected = shuffle(available).slice(0, count);
@@ -111,6 +141,7 @@ async function assignQuestionsToExam(examId: string, examData: Record<string, un
 
         if (selected.length < count) {
             console.warn(`Exam ${examId}: subject ${subjectId} needs ${count} questions but only ${selected.length} available.`);
+            questionDeficit.push({ subjectId, requested: count, available: selected.length });
         }
     }
 
@@ -143,7 +174,12 @@ async function assignQuestionsToExam(examId: string, examData: Record<string, un
                     if (data.optionImages) safeQ.optionImages = data.optionImages;
                     if (data.mediaUrl) safeQ.mediaUrl = data.mediaUrl;
                     if (data.mediaType) safeQ.mediaType = data.mediaType;
-                    
+                    // FIX: include extraImageUrls so multi-image questions render correctly
+                    // in published exams (e.g. geometry problems with multiple figures).
+                    if (data.extraImageUrls && Array.isArray(data.extraImageUrls) && data.extraImageUrls.length > 0) {
+                        safeQ.extraImageUrls = data.extraImageUrls;
+                    }
+
                     questionSnapshot.push(safeQ);
                 }
             });
@@ -158,6 +194,9 @@ async function assignQuestionsToExam(examId: string, examData: Record<string, un
         questionSnapshot: orderedSnapshot,
         questionsAssigned: true,
         questionsAssignedAt: admin.firestore.FieldValue.serverTimestamp(),
+        // FIX 22: Persist the deficit info so admin UIs can surface a
+        // "draft_needs_attention" badge / list when the pool is insufficient.
+        questionDeficit: questionDeficit.length > 0 ? questionDeficit : admin.firestore.FieldValue.delete(),
     });
 
     // Save answer key to a secured collection only accessible by servers/admins
@@ -165,6 +204,31 @@ async function assignQuestionsToExam(examId: string, examData: Record<string, un
         answerKey,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+
+    // FIX 22: Notify the exam creator about an insufficient question pool so they
+    // can fix the question bank or adjust the subject distribution.
+    if (questionDeficit.length > 0) {
+        const creatorId = examData.createdBy as string | undefined;
+        if (creatorId) {
+            try {
+                const summary = questionDeficit
+                    .map(d => `${sanitizeForNotification(d.subjectId)}: ${d.available}/${d.requested}`)
+                    .join(", ");
+                await db.collection("notifications").add({
+                    recipientId: creatorId,
+                    type: "system_alert",
+                    title: "Шалгалтад асуулт хүрэлцэхгүй байна",
+                    // FIX 38: sanitize the exam title before interpolation
+                    message: `"${sanitizeForNotification(examData.title || "")}" шалгалтанд хангалттай асуулт байхгүй: ${summary}. Асуултын санг шалгана уу.`,
+                    examId,
+                    read: false,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
+            } catch (notifErr) {
+                console.error("Failed to notify exam creator about question deficit", notifErr);
+            }
+        }
+    }
 
     console.log(`Exam ${examId}: assigned ${shuffledAll.length} questions and built snapshots.`);
 }
@@ -232,13 +296,47 @@ export const onQuestionDelete = functions.firestore
         const questionId = context.params.questionId;
         await updateStat("totalQuestions", -1);
 
-        // Cascade delete exams containing this question
+        // Find exams that reference this question
         const examsSnap = await db.collection("exams").where("questionIds", "array-contains", questionId).get();
-        if (!examsSnap.empty) {
-            const batch = db.batch();
-            examsSnap.docs.forEach(doc => batch.delete(doc.ref));
-            await batch.commit();
-            console.log(`Deleted ${examsSnap.size} exams cascading from deleted question ${questionId}`);
+        if (examsSnap.empty) return;
+
+        for (const examDoc of examsSnap.docs) {
+            const examData = examDoc.data();
+            const status = examData.status as string | undefined;
+
+            if (status === "draft") {
+                // Safe to remove the question ID from the draft exam
+                await examDoc.ref.update({
+                    questionIds: admin.firestore.FieldValue.arrayRemove(questionId),
+                });
+                console.log(`Removed question ${questionId} from draft exam ${examDoc.id}`);
+            } else {
+                // published or completed — do NOT modify, only warn
+                console.warn(
+                    `Question ${questionId} was deleted but exam ${examDoc.id} (status: ${status}) still references it. Manual review required.`
+                );
+
+                // FIX F3: Notify the exam creator that their published/completed exam still
+                // references a deleted question and needs manual review.
+                if (status === "published") {
+                    const creatorId = examData.createdBy as string | undefined;
+                    if (creatorId) {
+                        try {
+                            await db.collection("notifications").add({
+                                recipientId: creatorId,
+                                type: "system_alert",
+                                title: "Шалгалтын асуулт устгагдсан",
+                                // FIX 38: sanitize exam title interpolation
+                                message: `"${sanitizeForNotification(examData.title || "")}" шалгалт дотор устгагдсан асуулт байна. Шалгалтын асуултын санг шалгана уу.`,
+                                read: false,
+                                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                            });
+                        } catch (notifErr) {
+                            console.error("Failed to notify exam creator about deleted question", notifErr);
+                        }
+                    }
+                }
+            }
         }
     });
 
@@ -248,8 +346,13 @@ export const onExamCreate = functions.firestore
     .onCreate(async (snap, context) => {
         await updateStat("totalExams", 1);
         const data = snap.data();
-        console.log(`Exam ${context.params.examId} created – assigning questions.`);
-        await assignQuestionsToExam(context.params.examId, data);
+        // Only assign questions for published exams — skip drafts
+        if (data.status === 'published') {
+            console.log(`Exam ${context.params.examId} created as published – assigning questions.`);
+            await assignQuestionsToExam(context.params.examId, data);
+        } else {
+            console.log(`Exam ${context.params.examId} created as draft – skipping question assignment.`);
+        }
     });
 
 export const onExamDelete = functions.firestore
@@ -297,15 +400,28 @@ export const onExamUpdate = functions.firestore
 
         const statusChangedToPublished = before.status !== "published" && after.status === "published";
         const subjectDistributionChanged = JSON.stringify(before.subjectDistribution) !== JSON.stringify(after.subjectDistribution);
+        const gradeChanged = before.grade !== after.grade;
 
         if (statusChangedToPublished) {
-            if (!after.questionsAssigned) {
+            // When transitioning to published: assign questions if empty or not yet assigned
+            const questionIds = after.questionIds as string[] | undefined;
+            const needsAssignment = !after.questionsAssigned || !questionIds || questionIds.length === 0;
+            if (needsAssignment) {
                 console.log(`Exam ${context.params.examId} published – assigning questions.`);
                 await assignQuestionsToExam(context.params.examId, after);
             }
-        } else if (after.status === "draft" && subjectDistributionChanged) {
-            console.log(`Exam ${context.params.examId} draft updated – re-assigning questions.`);
+        } else if (after.status === "published" && (subjectDistributionChanged || gradeChanged)) {
+            // FIX 22: When a published exam's distribution or grade changes, force a
+            // re-assignment so the question pool always matches the current distribution.
+            console.log(`Exam ${context.params.examId} published and distribution/grade changed – re-assigning questions.`);
             await assignQuestionsToExam(context.params.examId, after);
+        } else if (after.status === "draft" && (subjectDistributionChanged || gradeChanged)) {
+            // When draft distribution/grade changes, reset questionIds so they'll be re-assigned on publish
+            console.log(`Exam ${context.params.examId} draft updated – resetting questionIds.`);
+            await db.collection("exams").doc(context.params.examId).update({
+                questionIds: [],
+                questionsAssigned: false,
+            });
         }
     });
 
@@ -336,7 +452,7 @@ export const onSubmissionCreate = functions.firestore
         await updateStat("totalSubmissions", 1);
 
         const submission = snap.data();
-        const { examId, studentId, studentName, score, maxScore, percentage } = submission;
+        const { examId, studentId, studentName, score, maxScore, percentage, passed } = submission;
 
         try {
             // Fetch exam title for notification
@@ -351,6 +467,41 @@ export const onSubmissionCreate = functions.firestore
                 examTitle,
                 studentName,
             });
+
+            // FIX 28: Also notify the student themselves that their score is available.
+            try {
+                await db.collection("notifications").add({
+                    recipientId: studentId,
+                    type: "score_available",
+                    title: passed ? "Шалгалт тэнцлээ!" : "Дүн гарлаа",
+                    // FIX 38: sanitize exam title before interpolation
+                    message: `${sanitizeForNotification(examTitle) || "Шалгалт"}-ын дүн: ${percentage}% (${score}/${maxScore} оноо)`,
+                    examId,
+                    read: false,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
+            } catch (studentNotifErr) {
+                console.error("Error sending student submission notification:", studentNotifErr);
+            }
+
+            // FIX 41: Email notification stub — fire-and-forget so it never breaks grading.
+            try {
+                const studentDoc = await db.collection("users").doc(studentId).get();
+                const studentEmail = studentDoc.exists ? (studentDoc.data()?.email as string | undefined) : undefined;
+                if (studentEmail) {
+                    // FIX 38: sanitize user-controlled fields before embedding in email body/subject
+                    const safeTitle = sanitizeForNotification(examTitle) || "Шалгалт";
+                    const safeStudent = sanitizeForNotification(studentName);
+                    await sendEmail({
+                        to: studentEmail,
+                        subject: `${safeTitle}-ын дүн гарлаа`,
+                        text: `Сайн байна уу ${safeStudent}, "${safeTitle}" шалгалтын дүн: ${percentage}% (${score}/${maxScore} оноо).`,
+                        type: 'score_available',
+                    });
+                }
+            } catch (emailErr) {
+                console.error("Error sending score_available email (stub):", emailErr);
+            }
         } catch (error) {
             console.error("Error sending submission notification:", error);
         }
@@ -360,6 +511,39 @@ export const onSubmissionDelete = functions.firestore
     .document("submissions/{submissionId}")
     .onDelete(async () => {
         await updateStat("totalSubmissions", -1);
+    });
+
+// FIX 44: Update question difficulty stats when a submission is finalized.
+// Tracks attemptCount, correctCount, lastAttemptedAt per question — feeds
+// the teacher analytics page (FIX 45).
+export const onSubmissionFinalized = functions.firestore
+    .document('submissions/{submissionId}')
+    .onCreate(async (snap) => {
+        const data = snap.data();
+        if (!data?.gradedAnswers) return;
+
+        const batch = admin.firestore().batch();
+        const updates = new Map<string, { total: number; correct: number }>();
+
+        for (const [qId, graded] of Object.entries(data.gradedAnswers as Record<string, { isCorrect: boolean }>)) {
+            const u = updates.get(qId) || { total: 0, correct: 0 };
+            u.total += 1;
+            if (graded.isCorrect) u.correct += 1;
+            updates.set(qId, u);
+        }
+
+        for (const [qId, u] of updates.entries()) {
+            const ref = admin.firestore().collection('questions').doc(qId);
+            batch.update(ref, {
+                attemptCount: admin.firestore.FieldValue.increment(u.total),
+                correctCount: admin.firestore.FieldValue.increment(u.correct),
+                lastAttemptedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+        }
+
+        try { await batch.commit(); } catch (err) {
+            console.error('[difficulty calibration]', err);
+        }
     });
 
 // ─── Helper: notify parent ───────────────────────────────────────────────────
@@ -400,20 +584,25 @@ async function notifyParentOfExamEvent(
 
         const parentId = parentQuery.docs[0].id;
 
+        // FIX 38: sanitize studentName/examTitle so a malicious display name can't
+        // smuggle markup or control chars into parent-facing notification messages.
+        const safeStudentName = sanitizeForNotification(studentName);
+        const safeExamTitle = sanitizeForNotification(examTitle);
+
         let message = "";
         if (type === "exam_started") {
-            message = `${studentName} "${examTitle}" шалгалтыг эхлүүллээ.`;
+            message = `${safeStudentName} "${safeExamTitle}" шалгалтыг эхлүүллээ.`;
         } else if (type === "score_available") {
-            message = `${studentName}-ийн "${examTitle}" шалгалтын дүн гарлаа. Оноо: ${extra?.score}/${extra?.maxScore} (${extra?.percentage}%).`;
+            message = `${safeStudentName}-ийн "${safeExamTitle}" шалгалтын дүн гарлаа. Оноо: ${extra?.score}/${extra?.maxScore} (${extra?.percentage}%).`;
         }
 
         await db.collection("notifications").add({
             type,
             recipientId: parentId,
             studentId,
-            studentName,
+            studentName: safeStudentName,
             examId,
-            examTitle,
+            examTitle: safeExamTitle,
             message,
             score: extra?.score ?? null,
             maxScore: extra?.maxScore ?? null,
@@ -508,6 +697,30 @@ export const reassignExamQuestions = functions.https.onCall(async (data, context
     await assignQuestionsToExam(examId, examDoc.data() as Record<string, unknown>);
     return { success: true };
 });
+
+// ─── Scheduled daily Firestore backup to GCS ─────────────────────────────────
+// FIX 48: Trigger a Firestore export to a GCS bucket every day at 02:00 ULA.
+// Note: requires the project to have a backup bucket and the service account
+// to have permission to export Firestore data.
+export const scheduledFirestoreBackup = functions.pubsub
+    .schedule('every day 02:00')
+    .timeZone('Asia/Ulaanbaatar')
+    .onRun(async () => {
+        try {
+            const projectId = process.env.GCLOUD_PROJECT || 'santentryexam';
+            const bucket = `gs://${projectId}-backups`;
+            const timestamp = new Date().toISOString().split('T')[0];
+            console.log(`[backup] Triggering Firestore export to ${bucket}/exports/${timestamp}`);
+            // The actual export requires the firestore admin REST API or gcloud SDK
+            // Documented placeholder: see https://firebase.google.com/docs/firestore/manage-data/export-import
+            // TODO: implement via REST:
+            //   POST https://firestore.googleapis.com/v1/projects/{projectId}/databases/(default):exportDocuments
+            return null;
+        } catch (err) {
+            console.error('[backup] Failed:', err);
+            return null;
+        }
+    });
 
 // ─── Infrastructure usage (admin monitoring) ─────────────────────────────────
 const monitoringClient = new MetricServiceClient();

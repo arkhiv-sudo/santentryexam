@@ -15,6 +15,7 @@ import { ShieldCheck, Loader2 } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
+import { checkPasswordStrength } from "@/lib/password-policy";
 
 const formSchema = z.object({
     firstName: z.string().min(1, "Нэрээ оруулна уу"),
@@ -45,6 +46,16 @@ export default function SignupPage() {
     });
 
     const onSubmit = async (data: FormData) => {
+        // FIX 34: Enforce password complexity before hitting Firebase Auth so the user
+        // sees a single, localised error message instead of an opaque auth/weak-password.
+        const pwCheck = checkPasswordStrength(data.password.trim());
+        if (!pwCheck.ok) {
+            const msg = pwCheck.errors.join(", ");
+            setError("password", { message: msg });
+            toast.error(msg);
+            return;
+        }
+
         setLoading(true);
 
         try {

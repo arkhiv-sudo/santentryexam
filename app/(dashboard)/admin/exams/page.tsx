@@ -84,7 +84,7 @@ export default function ExamsPage() {
     const handleDelete = async (id: string) => {
         const confirmed = await confirm({
             title: "Устгахыг баталгаажуулах",
-            message: "Та энэ шалгалтыг устгахдаа итгэлтэй байна уу?",
+            message: "Шалгалттай холбоотой бүх дүн, бүртгэл устах болно. Энэ үйлдлийг буцаах боломжгүй.",
             confirmLabel: "Устгах",
             variant: "destructive"
         });
@@ -94,8 +94,9 @@ export default function ExamsPage() {
             await ExamService.deleteExam(id);
             queryClient.invalidateQueries({ queryKey: ["exams"] });
             toast.success("Шалгалт амжилттай устгагдлаа");
-        } catch {
-            toast.error("Шалгалтыг устгахад алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[exams.handleDelete]", err);
+            toast.error(err instanceof Error ? err.message : "Шалгалтыг устгахад алдаа гарлаа");
         }
     };
 
@@ -124,8 +125,9 @@ export default function ExamsPage() {
             await ExamService.updateExam(examId, { status: newStatus });
             queryClient.invalidateQueries({ queryKey: ["exams"] });
             toast.success("Төлөв амжилттай шинэчлэгдлээ");
-        } catch {
-            toast.error("Төлөв өөрчлөхөд алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[handleStatusChange]", err);
+            toast.error(err instanceof Error ? err.message : "Төлөв өөрчлөхөд алдаа гарлаа");
         }
     };
 
@@ -144,8 +146,9 @@ export default function ExamsPage() {
             await reassign({ examId });
             queryClient.invalidateQueries({ queryKey: ["exams"] });
             toast.success("Асуулт амжилттай дахин оноогдлоо");
-        } catch (err) {
-            toast.error(`Алдаа гарлаа: ${(err as Error).message}`);
+        } catch (err: unknown) {
+            console.error("[handleReassignQuestions]", err);
+            toast.error(err instanceof Error ? `Алдаа гарлаа: ${err.message}` : "Алдаа гарлаа");
         } finally {
             setReassigningExamId(null);
         }

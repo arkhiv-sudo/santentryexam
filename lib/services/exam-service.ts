@@ -10,7 +10,9 @@ import {
     query,
     orderBy,
     where,
+    limit,
     Timestamp,
+    runTransaction,
 } from "firebase/firestore";
 import { Exam, Registration, Submission, ExamResult } from "@/types";
 
@@ -20,7 +22,10 @@ const SUBMISSIONS = "submissions";
 const EXAM_RESULTS = "exam_results";
 
 // ─── In-memory cache ──────────────────────────────────────────────────────────
-// Stores the Firestore document ID for a given studentId+examId pair so that
+// FIX 39: In-memory cache LOCAL TO THE CLIENT BROWSER TAB.
+// This is NOT shared across users or persisted to localStorage.
+// Cleared on page reload. Purpose: avoid repeated Firestore lookups
+// for the same student+exam registration within a single session so that
 // saveDraftAnswers, recordViolation, etc. can skip the getDocs query and go
 // straight to updateDoc — eliminating at least 1 read per autosave cycle.
 const _regIdCache = new Map<string, string>();
@@ -69,36 +74,36 @@ export const ExamService = {
     },
 
     updateExam: async (id: string, updates: Partial<Omit<Exam, "id">>): Promise<void> => {
+        // FIX 12: Guard against modifying critical fields on a published exam.
+        // questionIds, grade, and duration cannot change after students may have already
+        // registered or started the exam — doing so would corrupt their session data.
+        const currentSnap = await getDoc(doc(db, EXAMS, id));
+        if (currentSnap.data()?.status === 'published') {
+            const ALLOWED_ON_PUBLISHED: Array<keyof Omit<Exam, "id">> = ['status', 'passingScore', 'maxAttempts'];
+            const updateKeys = Object.keys(updates) as Array<keyof Omit<Exam, "id">>;
+            const forbidden = updateKeys.filter(k => !ALLOWED_ON_PUBLISHED.includes(k));
+            if (forbidden.length > 0) {
+                throw new Error(`Нийтлэгдсэн шалгалтын ${forbidden.join(', ')} талбарыг өөрчлөх боломжгүй`);
+            }
+        }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await updateDoc(doc(db, EXAMS, id), updates as any);
     },
 
     deleteExam: async (id: string): Promise<void> => {
-        const { writeBatch } = await import("firebase/firestore");
-        const batch = writeBatch(db);
-
-        // 1. Delete the exam document itself
-        batch.delete(doc(db, EXAMS, id));
-
-        // 2. Delete all registrations for this exam
-        const regSnap = await getDocs(
-            query(collection(db, REGISTRATIONS), where("examId", "==", id))
-        );
-        regSnap.forEach(d => batch.delete(d.ref));
-
-        // 3. Delete all submissions for this exam
-        const subSnap = await getDocs(
-            query(collection(db, SUBMISSIONS), where("examId", "==", id))
-        );
-        subSnap.forEach(d => batch.delete(d.ref));
-
-        // 4. Delete all exam results for this exam
-        const resSnap = await getDocs(
-            query(collection(db, EXAM_RESULTS), where("examId", "==", id))
-        );
-        resSnap.forEach(d => batch.delete(d.ref));
-
-        await batch.commit();
+        // FIX D2: Only delete the exam document. The onExamDelete Cloud Function
+        // (functions/src/index.ts) cascades the deletion of registrations,
+        // submissions, exam_results, and exam_answers. Performing the cascade here
+        // as well would double-delete and slow the call down.
+        //
+        // TODO: Soft delete pattern
+        // Currently deleteExam() does hard delete via Cloud Function cascade.
+        // Production should:
+        // 1. Set archivedAt timestamp instead of deleting
+        // 2. Add scheduled function to hard-delete after 30 days
+        // 3. Add admin "restore" button for archived items
+        const { deleteDoc } = await import("firebase/firestore");
+        await deleteDoc(doc(db, EXAMS, id));
     },
 
     // ── Registration ──────────────────────────────────────────────────────────
@@ -129,10 +134,24 @@ export const ExamService = {
         };
     },
 
-    /** Register a student for an exam (no-op if already registered). */
-    registerForExam: async (studentId: string, examId: string): Promise<void> => {
+    /** Register a student for an exam. Returns registration ID (idempotent — returns existing ID if already registered). */
+    registerForExam: async (studentId: string, examId: string): Promise<string> => {
+        // Check for existing registration before creating
         const existing = await ExamService.getStudentRegistration(studentId, examId);
-        if (existing) return; // already registered
+        if (existing) return existing.id; // already registered — return existing ID
+
+        // FIX C1: Enforce registrationEndDate + status server-side before creating registration.
+        const examSnap = await getDoc(doc(db, EXAMS, examId));
+        if (!examSnap.exists()) throw new Error("Шалгалт олдсонгүй");
+        const examData = examSnap.data();
+        if (examData.status !== "published") {
+            throw new Error("Шалгалт нийтлэгдээгүй байна");
+        }
+        const regEndRaw = examData.registrationEndDate;
+        const regEnd = regEndRaw?.toDate ? regEndRaw.toDate() : (regEndRaw ? new Date(regEndRaw) : null);
+        if (regEnd && new Date() > regEnd) {
+            throw new Error("Бүртгэлийн хугацаа дууссан байна");
+        }
 
         const docRef = await addDoc(collection(db, REGISTRATIONS), {
             studentId,
@@ -143,6 +162,7 @@ export const ExamService = {
         });
         // ✅ Cache the new reg ID immediately
         _setRegCache(studentId, examId, docRef.id);
+        return docRef.id;
     },
 
     /** Mark exam as started and return the registration id. */
@@ -193,25 +213,45 @@ export const ExamService = {
     },
 
     /** Record a cheating violation for a registration.
-     *  ✅ OPTIMIZED: uses in-memory reg ID cache to skip the getDocs query. */
+     *  FIX 24: Uses runTransaction to read+increment atomically. Replaces the prior
+     *  updateDoc+getDoc pattern which had a race window where two concurrent
+     *  violation reports could undercount. */
     recordViolation: async (studentId: string, examId: string): Promise<number> => {
         const cachedId = _cachedRegId(studentId, examId);
+
         if (cachedId) {
-            // Fast path: we don't know current count from cache alone, but
-            // we use Firestore FieldValue.increment to avoid a read entirely.
-            const { increment } = await import("firebase/firestore");
-            await updateDoc(doc(db, REGISTRATIONS, cachedId), {
-                violations: increment(1)
+            const regRef = doc(db, REGISTRATIONS, cachedId);
+            return await runTransaction(db, async (tx) => {
+                const snap = await tx.get(regRef);
+                if (!snap.exists()) throw new Error("Бүртгэл олдсонгүй");
+                const current = (snap.data().violations as number | undefined) || 0;
+                const next = current + 1;
+                tx.update(regRef, { violations: next });
+                return next;
             });
-            // Return a safe estimate (the UI reads it from state anyway)
-            return 0;
         }
-        // Fallback path: full read
-        const reg = await ExamService.getStudentRegistration(studentId, examId);
-        if (!reg) return 0;
-        const newCount = (reg.violations || 0) + 1;
-        await updateDoc(doc(db, REGISTRATIONS, reg.id), { violations: newCount });
-        return newCount;
+
+        // Fallback: look up registration first
+        const q = query(
+            collection(db, REGISTRATIONS),
+            where("studentId", "==", studentId),
+            where("examId", "==", examId),
+            limit(1)
+        );
+        const snap = await getDocs(q);
+        if (snap.empty) throw new Error("Бүртгэл олдсонгүй");
+
+        const regId = snap.docs[0].id;
+        _setRegCache(studentId, examId, regId);
+
+        const regRef = doc(db, REGISTRATIONS, regId);
+        return await runTransaction(db, async (tx) => {
+            const s = await tx.get(regRef);
+            const current = (s.data()?.violations as number | undefined) || 0;
+            const next = current + 1;
+            tx.update(regRef, { violations: next });
+            return next;
+        });
     },
 
     /** Get all exam IDs a student is registered for. */
@@ -333,5 +373,48 @@ export const ExamService = {
         }
 
         return results.sort((a, b) => b.gradedAt.getTime() - a.gradedAt.getTime());
+    },
+
+    // ── Admin: force-submit using server-side draft ─────────────────────────────
+    /** B2: Admin-initiated submission for a student who can no longer self-submit
+     *  (e.g. went offline mid-exam). Reads the latest draftAnswers from the
+     *  registration and POSTs to /api/exam/[examId]/submit with adminOverride so
+     *  the server uses targetStudentId rather than the caller's UID. */
+    forceSubmitFromDraft: async (studentId: string, examId: string, adminUid: string) => {
+        const regQuery = query(
+            collection(db, REGISTRATIONS),
+            where("studentId", "==", studentId),
+            where("examId", "==", examId),
+            limit(1),
+        );
+        const regSnap = await getDocs(regQuery);
+        if (regSnap.empty) throw new Error("Бүртгэл олдсонгүй");
+
+        const reg = regSnap.docs[0];
+        const regData = reg.data();
+        const draftAnswers = (regData.draftAnswers as Record<string, string>) || {};
+
+        const response = await fetch(`/api/exam/${examId}/submit`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                answers: draftAnswers,
+                timeTaken: 0,
+                studentName: (regData.studentName as string) || "",
+                adminOverride: true,
+                adminUid,
+                targetStudentId: studentId,
+            }),
+        });
+
+        if (!response.ok) {
+            let msg = "Server force-submit failed";
+            try {
+                const err = await response.json();
+                if (err?.error) msg = err.error;
+            } catch { /* ignore parse errors */ }
+            throw new Error(msg);
+        }
+        return response.json();
     },
 };

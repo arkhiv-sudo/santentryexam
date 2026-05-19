@@ -7,7 +7,8 @@ import {
     setDoc,
     deleteDoc,
     query,
-    where
+    where,
+    serverTimestamp
 } from "firebase/firestore";
 
 const ARCHIVES = "archived_exams";
@@ -17,40 +18,37 @@ const REGISTRATIONS = "registrations";
 const EXAM_RESULTS = "exam_results";
 
 export const ArchiveService = {
+    /** FIX D3: Semi-atomic "write-archive-first, then-delete-source". The reads
+     *  happen in parallel, the archive doc is written before deleting the exam,
+     *  and the operation is idempotent on re-run (no data loss if the function is
+     *  retried after a partial failure). */
     archiveExam: async (examId: string): Promise<void> => {
-        // 1. Fetch Exam
+        // 1. Read everything (outside any transaction) in parallel
         const examSnap = await getDoc(doc(db, EXAMS, examId));
         if (!examSnap.exists()) {
-            throw new Error(`Exam ${examId} not found`);
+            throw new Error("Шалгалт олдсонгүй");
         }
-        const examData = examSnap.data();
 
-        // 2. Fetch related data
-        const getColDocs = async (col: string, field: string = "examId") => {
-            const snap = await getDocs(query(collection(db, col), where(field, "==", examId)));
-            return snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        };
+        const [regsSnap, subsSnap, resultsSnap] = await Promise.all([
+            getDocs(query(collection(db, REGISTRATIONS), where("examId", "==", examId))),
+            getDocs(query(collection(db, SUBMISSIONS), where("examId", "==", examId))),
+            getDocs(query(collection(db, EXAM_RESULTS), where("examId", "==", examId))),
+        ]);
 
-        const submissions = await getColDocs(SUBMISSIONS);
-        const results = await getColDocs(EXAM_RESULTS);
-        const registrations = await getColDocs(REGISTRATIONS);
-
-        // 3. Assemble archive document
         const archiveData = {
-            id: examId,
-            exam: examData,
-            submissions,
-            results,
-            registrations,
-            archivedAt: new Date()
+            exam: { id: examSnap.id, ...examSnap.data() },
+            registrations: regsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+            submissions: subsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+            results: resultsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+            archivedAt: serverTimestamp(),
         };
 
-        // 4. Save to archived_exams
+        // 2. Write the archive document FIRST. If the next step fails, the
+        //    archive is still safely persisted and the call can be retried.
         await setDoc(doc(db, ARCHIVES, examId), archiveData);
 
-        // 5. Delete original exam. 
-        // This will trigger the Cloud Function `onExamDelete` which cleans up 
-        // original registrations, submissions, and exam_results to keep the database clean.
+        // 3. Delete the exam. The onExamDelete Cloud Function cascades the
+        //    deletion of registrations / submissions / exam_results / exam_answers.
         await deleteDoc(doc(db, EXAMS, examId));
     },
 

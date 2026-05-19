@@ -2,8 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { adminAuth, adminDb } from "@/lib/firebase-admin";
 import { FieldValue } from "firebase-admin/firestore";
 import { cookies } from "next/headers";
+import { checkOrigin } from "@/lib/csrf";
+import { logAdmin, getRequestMeta } from "@/lib/audit-log";
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ examId: string }> }) {
+    const origin = checkOrigin(req);
+    if (!origin.ok) return origin.response;
+
     try {
         const { examId } = await params;
 
@@ -13,17 +18,34 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
         if (!sessionCookie) {
             return NextResponse.json({ error: "Нэвтрээгүй байна" }, { status: 401 });
         }
-        let studentId: string;
+        let callerUid: string;
         let decodedToken: Awaited<ReturnType<typeof adminAuth.verifySessionCookie>>;
         try {
             decodedToken = await adminAuth.verifySessionCookie(sessionCookie, true);
-            studentId = decodedToken.uid;
+            callerUid = decodedToken.uid;
         } catch {
             return NextResponse.json({ error: "Сессион хүчингүй" }, { status: 401 });
         }
 
         const body = await req.json();
-        const { answers, timeTaken, studentName } = body;
+        const { answers, timeTaken, studentName, adminOverride, targetStudentId } = body;
+
+        // B2: Admin force-submit — the caller is an admin submitting on behalf of
+        // another student (e.g. one who went offline mid-exam). We verify the
+        // caller's role from the session cookie's custom claims, then use the
+        // targetStudentId for everything downstream.
+        let studentId: string;
+        if (adminOverride) {
+            if (decodedToken.role !== "admin") {
+                return NextResponse.json({ error: "Зөвхөн админ хүчээр илгээх боломжтой" }, { status: 403 });
+            }
+            if (!targetStudentId) {
+                return NextResponse.json({ error: "targetStudentId шаардлагатай" }, { status: 400 });
+            }
+            studentId = targetStudentId;
+        } else {
+            studentId = callerUid;
+        }
 
         // 1. Check if already submitted
         const existingSubmissions = await adminDb.collection("submissions")
@@ -46,16 +68,38 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
         const passingScoreNum = examData.passingScore || 0;
         const MAX_VIOLATIONS = 3;
 
-        // ✓ Check violations — if the student was already auto-submitted via cheating, reject
-        const regForViolationCheck = await adminDb.collection("registrations")
-            .where("examId", "==", examId)
-            .where("studentId", "==", studentId)
-            .limit(1)
-            .get();
-        if (!regForViolationCheck.empty) {
-            const regData = regForViolationCheck.docs[0].data();
-            if ((regData.violations || 0) >= MAX_VIOLATIONS && regData.status === "completed") {
-                return NextResponse.json({ error: "Хуулах оролдлогоос олон шалгалт хүчингүй болсонаар." }, { status: 403 });
+        // ✓ Check violations — reject if student exceeded MAX_VIOLATIONS regardless of status.
+        // B2: Skip this gate for admin force-submit so a stuck/offline student can still
+        // be wrapped up by an admin.
+        if (!adminOverride) {
+            const regForViolationCheck = await adminDb.collection("registrations")
+                .where("examId", "==", examId)
+                .where("studentId", "==", studentId)
+                .limit(1)
+                .get();
+            if (!regForViolationCheck.empty) {
+                const regData = regForViolationCheck.docs[0].data();
+                if ((regData.violations || 0) >= MAX_VIOLATIONS) {
+                    return NextResponse.json({ error: "Хуулах оролдлогоос олон шалгалт хүчингүй болсонаар." }, { status: 403 });
+                }
+            }
+        }
+
+        // FIX 29: Enforce maxAttempts at submission time. Count previously approved
+        // retake requests for this student+exam and reject if attempts exceed the limit.
+        if (examData.maxAttempts && typeof examData.maxAttempts === 'number') {
+            try {
+                const approvedRetakes = await adminDb.collection('retake_requests')
+                    .where('studentId', '==', studentId)
+                    .where('examId', '==', examId)
+                    .where('status', '==', 'approved')
+                    .count().get();
+                const attemptNumber = approvedRetakes.data().count + 1; // current attempt + previously approved retakes
+                if (attemptNumber > examData.maxAttempts) {
+                    return NextResponse.json({ error: `Дээд хязгаар (${examData.maxAttempts} оролдлого) хэтэрсэн` }, { status: 403 });
+                }
+            } catch (e) {
+                console.error('[submit] maxAttempts check failed:', e);
             }
         }
 
@@ -94,6 +138,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
                 }
             }
 
+            // FIX 21: Detect and alert on empty answer keys. Don't abort — still grade
+            // so the student isn't blocked — but log heavily and notify the exam creator
+            // so they can review/fix the exam configuration.
+            const emptyKeys = questionIds.filter(qId => !answerKey[qId] || answerKey[qId] === '');
+            if (emptyKeys.length > 0) {
+                console.error(`[CRITICAL] Empty answer keys for exam ${examId}: ${emptyKeys.join(', ')}`);
+                try {
+                    if (examData.createdBy) {
+                        await adminDb.collection('notifications').add({
+                            recipientId: examData.createdBy,
+                            type: 'system_alert',
+                            title: 'Хариулт олдсонгүй',
+                            message: `Шалгалт "${examData.title || ''}"-д ${emptyKeys.length} асуултын зөв хариу хоосон байна. Шалгалтын тохиргоог нь шалгана уу.`,
+                            read: false,
+                            createdAt: FieldValue.serverTimestamp(),
+                        });
+                    }
+                } catch {}
+            }
+
             // Grade
             for (const qId of questionIds) {
                 const studentAns = answers[qId] || "";
@@ -126,18 +190,66 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
                         .replace(/\\\)/g, '')    // remove latex \)
                         .replace(/\\\[/g, '')    // remove latex \[
                         .replace(/\\\]/g, '')    // remove latex \]
+                        .replace(/\$/g, '')      // remove $ delimiters
+                        .replace(/\\d?frac\s*\{(-?\d+(?:\.\d+)?)\}\s*\{(-?\d+(?:\.\d+)?)\}/g, '$1/$2') // \dfrac{a}{b} → a/b
+                        .replace(/\\(d?frac|cdot|times|sqrt|left|right)/g, '') // зүйрлэх LaTeX тушаал
+                        .replace(/[{}]/g, '')    // үлдсэн latex braces
                         .replace(/\s+/g, ' ')    // normalize spaces
                         .trim()
                         .toLowerCase();
                 };
 
+                // input хэлбэрийн нэмэлт нормализаци (хариултын хувьд илүү уян)
+                const normalizeForInput = (str: string) => {
+                    let s = stripFormatting(str);
+                    s = s.replace(/^[a-zа-я]\s*=\s*/i, '');   // "x = 2.7" → "2.7"
+                    // Цэг таслалаар тусгаарласан мянгат нэгжийг авна (16,231,268 → 16231268)
+                    s = s.replace(/(?<=\d),(?=\d{3}(\D|$))/g, '');
+                    s = s.replace(/(?<=\d)\s+(?=\d{3}(\D|$))/g, '');
+                    s = s.replace(/\s+/g, '');                  // зайг бүрэн арилгана
+                    return s;
+                };
+
+                // Тоог ялгах (бутархай эсвэл аравтын)
+                const toNumber = (s: string): number | null => {
+                    // Мянгат separator-уудыг арилгана
+                    let cleaned = s.replace(/(?<=\d)[ ,'](?=\d{3}(\D|$))/g, '');
+                    cleaned = cleaned.replace(/[^\d.,/\-]/g, '');
+                    const fracMatch = cleaned.match(/^(-?\d+)\/(\d+)$/);
+                    if (fracMatch) {
+                        const num = parseInt(fracMatch[1]);
+                        const den = parseInt(fracMatch[2]);
+                        if (den !== 0) return num / den;
+                    }
+                    const num = parseFloat(cleaned.replace(',', '.'));
+                    return isNaN(num) ? null : num;
+                };
+
                 const studentAnsClean = stripFormatting(studentAns);
                 const correctAnsClean = stripFormatting(String(correctAns));
-                
-                // Allow exact match OR match with all spaces removed (helpful for numbers/simple math)
-                let isCorrect = (studentAnsClean === correctAnsClean || 
-                                 studentAns.replace(/\s+/g, '').toLowerCase() === correctAnsClean.replace(/\s+/g, '')) 
+
+                // Базовый шалгалт
+                let isCorrect = (studentAnsClean === correctAnsClean ||
+                                 studentAns.replace(/\s+/g, '').toLowerCase() === correctAnsClean.replace(/\s+/g, ''))
                                 && correctAnsClean !== "";
+
+                // Input хэлбэрийн хувьд илүү уян шалгалт
+                if (!isCorrect && qType === "input" && correctAnsClean !== "") {
+                    const studentN = normalizeForInput(studentAns);
+                    const correctN = normalizeForInput(String(correctAns));
+                    if (studentN === correctN && studentN !== '') {
+                        isCorrect = true;
+                    } else {
+                        // Тоон утга тулгах (5/6 vs 0.8333 vs 0,833)
+                        const studentNum = toNumber(studentN);
+                        const correctNum = toNumber(correctN);
+                        if (studentNum !== null && correctNum !== null) {
+                            if (Math.abs(studentNum - correctNum) < 0.001) {
+                                isCorrect = true;
+                            }
+                        }
+                    }
+                }
 
                 // Resilient check for corrupted questions that saved "a", "b", "c", "d"
                 if (!isCorrect && qType === "multiple_choice" && qOptions.length > 0 && studentAnsClean !== "") {
@@ -175,15 +287,51 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
         const percentage = maxScore > 0 ? Math.round((score / maxScore) * 100) : 0;
         const passed = percentage >= passingScoreNum;
 
+        // FIX 43: Practice mode — return graded answers without persisting a submission/result.
+        // The student sees the breakdown but no permanent record is kept.
+        const isPractice = examData.examMode === 'practice';
+        if (isPractice) {
+            return NextResponse.json({
+                success: true,
+                score,
+                maxScore,
+                percentage,
+                passed,
+                gradedAnswers,
+                practice: true,
+            });
+        }
+
         // 4, 5, 6: Atomic save of the student's submission via a single batch
         const submitBatch = adminDb.batch();
-        
+
+        // B2: When the admin force-submits, decodedToken.email is the admin's email.
+        // Never use that as the fallback — look up the target student's profile instead.
+        let resolvedStudentName = studentName as string | undefined;
+        if (!resolvedStudentName) {
+            if (adminOverride) {
+                try {
+                    const userDoc = await adminDb.collection("users").doc(studentId).get();
+                    if (userDoc.exists) {
+                        const u = userDoc.data()!;
+                        resolvedStudentName = `${u.lastName || ""} ${u.firstName || ""}`.trim() || (u.email as string) || studentId;
+                    } else {
+                        resolvedStudentName = studentId;
+                    }
+                } catch {
+                    resolvedStudentName = studentId;
+                }
+            } else {
+                resolvedStudentName = decodedToken.email || studentId;
+            }
+        }
+
         const submissionRef = adminDb.collection("submissions").doc();
         const now = new Date();
         submitBatch.set(submissionRef, {
             examId,
             studentId,
-            studentName: studentName || decodedToken.email || studentId,
+            studentName: resolvedStudentName,
             answers,
             timeTaken: timeTaken || 0,
             submittedAt: now,
@@ -193,7 +341,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
             maxScore,
             percentage,
             passed,
-            gradedAnswers
+            gradedAnswers,
+            // Provenance flag so admins/auditors can identify force-submits later
+            // FIX 23: Always attribute force-submit to the authenticated caller from the
+            // session cookie. Never trust body.adminUid which can be spoofed by clients.
+            forceSubmittedByAdmin: adminOverride ? callerUid : null,
         });
 
         const resultRef = adminDb.collection("exam_results").doc();
@@ -202,7 +354,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
             examId,
             examTitle: examData.title || "Шалгалт",
             studentId,
-            studentName: studentName || decodedToken.email || studentId,
+            studentName: resolvedStudentName,
             score,
             maxScore,
             percentage,
@@ -210,7 +362,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
             passingScore: passingScoreNum,
             gradedAt: now,
             timeTaken: timeTaken || 0,
-            rank: passed ? 0 : null // will be calculated below
+            rank: null // will be recalculated async below
         });
         
         // Update exam total participants count
@@ -238,50 +390,84 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
         // Commit the atomic submission block
         await submitBatch.commit();
 
+        // FIX 32 / FIX 33: Audit log every force-submit (admin acting on behalf of a student).
+        // Regular self-submits are not audited here — only the privileged admin override path.
+        if (adminOverride) {
+            const meta = getRequestMeta(req);
+            await logAdmin({
+                action: 'force_submit',
+                actorUid: callerUid,
+                actorRole: (decodedToken.role as string | undefined) || 'admin',
+                targetUid: studentId,
+                targetResource: `exams/${examId}`,
+                metadata: {
+                    submissionId: submissionRef.id,
+                    score,
+                    maxScore,
+                    percentage,
+                    passed,
+                },
+                ...meta,
+            });
+        }
+
         // 7. Respond immediately — rank recalculation runs fire-and-forget AFTER response
         // This ensures submit latency is not affected by rank recalculation cost.
-        void (async () => {
-            try {
-                const allPassingResultsSnap = await adminDb.collection("exam_results")
-                    .where("examId", "==", examId)
-                    .where("passed", "==", true)
-                    .get();
+        const recalculateRanks = async (eid: string) => {
+            // FIX 5: Rank ALL participants, not just those who passed.
+            // The previous filter on passed==true excluded failing students from the ranking,
+            // producing misleading rank numbers (e.g., only 5 students ranked out of 50 actual).
+            const allResultsSnap = await adminDb.collection("exam_results")
+                .where("examId", "==", eid)
+                .orderBy("score", "desc")
+                .get();
 
-                if (allPassingResultsSnap.empty) return;
+            if (allResultsSnap.empty) return;
 
-                const resultsData = allPassingResultsSnap.docs.map(d => {
-                    const data = d.data();
-                    return {
-                        id: d.id,
-                        score: data.score as number,
-                        timeTaken: data.timeTaken as number | undefined,
-                        rank: data.rank as number | null
-                    };
-                });
+            const totalParticipants = allResultsSnap.size;
 
-                // Sort: highest score first, then lowest timeTaken
-                resultsData.sort((a, b) => {
-                    if (b.score !== a.score) return b.score - a.score;
-                    return (a.timeTaken || 999999) - (b.timeTaken || 999999);
-                });
+            const resultsData = allResultsSnap.docs.map(d => {
+                const data = d.data();
+                return {
+                    id: d.id,
+                    score: data.score as number,
+                    timeTaken: data.timeTaken as number | undefined,
+                    rank: data.rank as number | null,
+                    totalParticipants: data.totalParticipants as number | undefined,
+                };
+            });
 
-                // Only write docs whose rank actually changed (minimize writes)
-                const rankBatch = adminDb.batch();
-                let changed = 0;
-                resultsData.forEach((res, i) => {
-                    const newRank = i + 1;
-                    if (res.rank !== newRank) {
-                        rankBatch.update(adminDb.collection("exam_results").doc(res.id), { rank: newRank });
-                        changed++;
-                        // Firestore batch limit: 500 ops. If somehow exceeded, commit early.
-                        // In practice rank changes are small diffs so this is unlikely.
-                    }
-                });
-                if (changed > 0) await rankBatch.commit();
-            } catch (rankErr) {
-                console.error("Rank recalculation failed (non-fatal):", rankErr);
+            // Sort: highest score first, then lowest timeTaken
+            resultsData.sort((a, b) => {
+                if (b.score !== a.score) return b.score - a.score;
+                return (a.timeTaken || 999999) - (b.timeTaken || 999999);
+            });
+
+            // FIX 26: Collect updates first then commit in chunks of <=400 ops to stay
+            // well below Firestore's 500-op batch limit even for large exams.
+            const updates: { ref: FirebaseFirestore.DocumentReference; data: { rank: number; totalParticipants: number } }[] = [];
+            resultsData.forEach((res, i) => {
+                const newRank = i + 1;
+                if (res.rank !== newRank || res.totalParticipants !== totalParticipants) {
+                    updates.push({
+                        ref: adminDb.collection("exam_results").doc(res.id),
+                        data: { rank: newRank, totalParticipants },
+                    });
+                }
+            });
+            const CHUNK = 400;
+            for (let i = 0; i < updates.length; i += CHUNK) {
+                const slice = updates.slice(i, i + CHUNK);
+                const batch = adminDb.batch();
+                slice.forEach(({ ref, data }) => batch.update(ref, data));
+                await batch.commit();
             }
-        })();
+        };
+
+        // Fire and forget - don't await
+        recalculateRanks(examId).catch(err => {
+            console.error('[submit] Rank recalculation failed:', err);
+        });
 
         return NextResponse.json({ success: true, score, percentage, passed });
     } catch (error: unknown) {

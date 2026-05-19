@@ -4,16 +4,18 @@ import { useAuth } from "@/components/AuthProvider";
 import { Card, CardContent } from "@/components/ui/Card";
 import { ClipboardList, Trophy, GraduationCap, Clock, Calendar, CheckCircle, AlertCircle, PlayCircle, Loader2, ArrowRight } from "lucide-react";
 import Link from "next/link";
-import { useMemo } from "react";
-import { collection, query, where, getDocs } from "firebase/firestore";
+import { useMemo, useEffect, useRef, useState } from "react";
+import { collection, query, where, getDocs, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { Exam } from "@/types";
 import { ExamService } from "@/lib/services/exam-service";
+import { toDate } from "@/lib/utils";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import { RetakeService, RetakeRequest } from "@/lib/services/retake-service";
 import { useServerTime, formatTimeLeft } from "@/hooks/useServerTime";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 export default function StudentDashboard() {
     const { profile } = useAuth();
@@ -40,8 +42,8 @@ export default function StudentDashboard() {
                 return {
                     id: doc.id,
                     ...data,
-                    scheduledAt: data.scheduledAt?.toDate ? data.scheduledAt.toDate() : new Date(data.scheduledAt),
-                    registrationEndDate: data.registrationEndDate?.toDate ? data.registrationEndDate.toDate() : new Date(data.registrationEndDate)
+                    scheduledAt: toDate(data.scheduledAt),
+                    registrationEndDate: toDate(data.registrationEndDate)
                 } as Exam;
             });
         },
@@ -92,22 +94,69 @@ export default function StudentDashboard() {
         refetchOnWindowFocus: false,
     });
 
+    // FIX E1: Custom retake reason — open a modal instead of submitting a hardcoded reason.
+    const [retakeDialogExam, setRetakeDialogExam] = useState<Exam | null>(null);
+    const [retakeReason, setRetakeReason] = useState("");
+
     const retakeMutation = useMutation({
-        mutationFn: (exam: Exam) => RetakeService.requestRetake({
+        mutationFn: ({ exam, reason }: { exam: Exam; reason: string }) => RetakeService.requestRetake({
             studentId: profile!.uid,
             studentName: `${profile!.lastName} ${profile!.firstName}`,
             examId: exam.id,
             examTitle: exam.title,
-            reason: "Сурагч өөрөө хүсэлт илгээсэн",
+            reason,
         }),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ["student_retake_requests"] });
+            setRetakeDialogExam(null);
+            setRetakeReason("");
             toast.success("Дахин өгөх хүсэлт илгээгдлээ. Админ зөвшөөрсний дараа дахин өгөх боломжтой болно.");
         },
         onError: () => {
             toast.error("Хүсэлт илгээхэд алдаа гарлаа.");
         }
     });
+
+    // FIX C2: Real-time listener — invalidate retake cache when retake_requests update,
+    // and surface a toast for newly-approved requests so the student sees it instantly.
+    const seenApprovedRef = useRef<Set<string>>(new Set());
+    const initializedSeenRef = useRef(false);
+    useEffect(() => {
+        if (!profile?.uid) return;
+        const q = query(
+            collection(db, "retake_requests"),
+            where("studentId", "==", profile.uid)
+        );
+        const unsubscribe = onSnapshot(q, (snap) => {
+            // Detect newly approved requests (after the initial seed snapshot).
+            const currentApproved = new Set<string>();
+            snap.forEach(d => {
+                const data = d.data() as { status?: string; examTitle?: string };
+                if (data.status === "approved") {
+                    currentApproved.add(d.id);
+                }
+            });
+            if (!initializedSeenRef.current) {
+                seenApprovedRef.current = currentApproved;
+                initializedSeenRef.current = true;
+            } else {
+                currentApproved.forEach(id => {
+                    if (!seenApprovedRef.current.has(id)) {
+                        const docData = snap.docs.find(d => d.id === id)?.data() as { examTitle?: string } | undefined;
+                        toast.success(
+                            docData?.examTitle
+                                ? `"${docData.examTitle}" дахин өгөх хүсэлт зөвшөөрөгдлөө`
+                                : "Дахин өгөх хүсэлт зөвшөөрөгдлөө"
+                        );
+                    }
+                });
+                seenApprovedRef.current = currentApproved;
+            }
+            queryClient.invalidateQueries({ queryKey: ["student_retake_requests", profile.uid] });
+            queryClient.invalidateQueries({ queryKey: ["student_registrations", profile.uid] });
+        });
+        return unsubscribe;
+    }, [profile?.uid, queryClient]);
 
     const isLoading = examsLoading || regsLoading || resultsLoading || retakesLoading;
 
@@ -117,7 +166,10 @@ export default function StudentDashboard() {
 
     const upcomingExams = exams.filter(e => {
         const reg = registrations.find(r => r.examId === e.id);
-        return !reg || reg.status !== "completed";
+        // FIX 10: Also exclude exams that have already ended — they belong in results, not upcoming.
+        const examEnd = new Date(toDate(e.scheduledAt).getTime() + (e.duration || 0) * 60 * 1000);
+        const nowDate = new Date(now);
+        return (!reg || reg.status !== "completed") && nowDate < examEnd;
     });
 
     return (
@@ -171,6 +223,7 @@ export default function StudentDashboard() {
 
             <div className="grid gap-5 lg:grid-cols-12">
                 {/* Main: Exams */}
+                <ErrorBoundary label="Шалгалтын жагсаалт ачаалахад алдаа">
                 <div className="lg:col-span-8 space-y-4">
                     <div className="flex items-center justify-between">
                         <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
@@ -257,11 +310,11 @@ export default function StudentDashboard() {
                                                                     return null;
                                                                 }
                                                                 return (
-                                                                    <Button 
-                                                                        variant="outline" 
-                                                                        size="sm" 
+                                                                    <Button
+                                                                        variant="outline"
+                                                                        size="sm"
                                                                         className="h-7 text-[10px] px-2 text-slate-500 border-slate-200 hover:bg-slate-50"
-                                                                        onClick={(e) => { e.preventDefault(); retakeMutation.mutate(exam); }}
+                                                                        onClick={(e) => { e.preventDefault(); setRetakeReason(""); setRetakeDialogExam(exam); }}
                                                                         disabled={retakeMutation.isPending}
                                                                     >
                                                                         Дахин өгөх хүсэлт
@@ -330,6 +383,7 @@ export default function StudentDashboard() {
                         )}
                     </div>
                 </div>
+                </ErrorBoundary>
 
                 {/* Sidebar */}
                 <div className="lg:col-span-4 space-y-4">
@@ -355,6 +409,7 @@ export default function StudentDashboard() {
 
                     {/* Recent results */}
                     {results.length > 0 && (
+                        <ErrorBoundary label="Сүүлийн дүн ачаалахад алдаа">
                         <Card className="border-0 shadow-sm">
                             <CardContent className="p-4">
                                 <h3 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-2">
@@ -376,6 +431,7 @@ export default function StudentDashboard() {
                                 </div>
                             </CardContent>
                         </Card>
+                        </ErrorBoundary>
                     )}
 
                     {/* Guide */}
@@ -403,6 +459,39 @@ export default function StudentDashboard() {
                     </Card>
                 </div>
             </div>
+
+            {/* FIX E1: Retake reason modal */}
+            {retakeDialogExam && (
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl p-6 max-w-md w-full">
+                        <h3 className="text-lg font-bold mb-3">Дахин шалгалтын хүсэлт</h3>
+                        <textarea
+                            value={retakeReason}
+                            onChange={e => setRetakeReason(e.target.value)}
+                            placeholder="Шалтгаанаа дэлгэрэнгүй бичнэ үү..."
+                            className="w-full p-3 border rounded min-h-[100px]"
+                            maxLength={500}
+                        />
+                        <div className="text-xs text-slate-500 mt-1">{retakeReason.length}/500</div>
+                        <div className="flex gap-2 mt-4">
+                            <button onClick={() => { setRetakeDialogExam(null); setRetakeReason(""); }} className="flex-1 p-2 border rounded">Болих</button>
+                            <button
+                                onClick={() => {
+                                    if (retakeReason.trim().length < 10) {
+                                        toast.error("Шалтгаан 10-аас доошгүй тэмдэгт байх ёстой");
+                                        return;
+                                    }
+                                    retakeMutation.mutate({ exam: retakeDialogExam, reason: retakeReason.trim() });
+                                }}
+                                disabled={retakeMutation.isPending}
+                                className="flex-1 p-2 bg-blue-600 text-white rounded disabled:opacity-50"
+                            >
+                                {retakeMutation.isPending ? "Илгээж байна..." : "Илгээх"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

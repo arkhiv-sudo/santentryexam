@@ -41,8 +41,9 @@ export default function AdminLessonsPage() {
             setNewName("");
             queryClient.invalidateQueries({ queryKey: ["lessons"] });
             toast.success("Хичээл амжилттай нэмэгдлээ");
-        } catch {
-            toast.error("Алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[lessons.handleCreate]", err);
+            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
         } finally {
             setAdding(false);
         }
@@ -63,8 +64,9 @@ export default function AdminLessonsPage() {
             await SettingsService.deleteLesson(id);
             queryClient.invalidateQueries({ queryKey: ["lessons"] });
             toast.success("Хичээл устгагдлаа");
-        } catch {
-            toast.error("Устгахад алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[lessons.handleDelete]", err);
+            toast.error(err instanceof Error ? err.message : "Устгахад алдаа гарлаа");
         }
     };
 

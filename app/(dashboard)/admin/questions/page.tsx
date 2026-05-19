@@ -30,6 +30,8 @@ import {
     orderBy,
     updateDoc,
     doc,
+    addDoc,
+    serverTimestamp,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage } from "@/lib/firebase";
@@ -493,8 +495,9 @@ export default function QuestionsPage() {
             await QuestionService.deleteQuestion(id);
             queryClient.invalidateQueries({ queryKey: ["admin_questions"] });
             toast.success("Асуулт амжилттай устгагдлаа");
-        } catch {
-            toast.error("Асуултыг устгахад алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[admin.handleDelete]", err);
+            toast.error(err instanceof Error ? err.message : "Асуултыг устгахад алдаа гарлаа");
         }
     };
 
@@ -513,8 +516,9 @@ export default function QuestionsPage() {
             setSelectedIds(new Set());
             queryClient.invalidateQueries({ queryKey: ["admin_questions"] });
             toast.success(`${selectedIds.size} асуулт амжилттай устгагдлаа`);
-        } catch {
-            toast.error("Бүлгүдийг устгахад алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[handleBulkDelete]", err);
+            toast.error(err instanceof Error ? err.message : "Бүлгүдийг устгахад алдаа гарлаа");
         } finally {
             setIsBulkDeleting(false);
         }
@@ -540,24 +544,43 @@ export default function QuestionsPage() {
             setSelectedIds(new Set());
             queryClient.invalidateQueries({ queryKey: ["admin_questions"] });
             toast.success(`${count} асуулт амжилттай устгагдлаа`);
-        } catch {
-            toast.error("Бүгдийг устгахад алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[handleDeleteAll]", err);
+            toast.error(err instanceof Error ? err.message : "Бүгдийг устгахад алдаа гарлаа");
         } finally {
             setIsBulkDeleting(false);
         }
     };
 
-    const handleApproveCorrection = async (correctionId: string) => {
+    // FIX C5: Notify the teacher who submitted a correction when admin approves/rejects.
+    const notifyCorrectionResult = async (correction: Correction, status: "approved" | "rejected") => {
         try {
-            await updateDoc(doc(db, "corrections", correctionId), { status: "approved" });
-            queryClient.invalidateQueries({ queryKey: ["admin_corrections"] });
-            toast.success("Засвар зөвшөөрөгдлөө");
-        } catch {
-            toast.error("Алдаа гарлаа");
+            await addDoc(collection(db, "notifications"), {
+                recipientId: correction.submittedBy,
+                type: status === "approved" ? "correction_approved" : "correction_rejected",
+                title: status === "approved" ? "Засварын санал зөвшөөрөгдлөө" : "Засварын санал татгалзагдсан",
+                message: `"${(correction.questionContent || "").slice(0, 50)}" асуултын засварын саналыг ${status === "approved" ? "зөвшөөрсөн" : "татгалзсан"}`,
+                read: false,
+                createdAt: serverTimestamp(),
+            });
+        } catch (e) {
+            console.error("Failed to create correction notification", e);
         }
     };
 
-    const handleRejectCorrection = async (correctionId: string) => {
+    const handleApproveCorrection = async (correction: Correction) => {
+        try {
+            await updateDoc(doc(db, "corrections", correction.id), { status: "approved" });
+            await notifyCorrectionResult(correction, "approved");
+            queryClient.invalidateQueries({ queryKey: ["admin_corrections"] });
+            toast.success("Засвар зөвшөөрөгдлөө");
+        } catch (err: unknown) {
+            console.error("[handleApproveCorrection]", err);
+            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
+        }
+    };
+
+    const handleRejectCorrection = async (correction: Correction) => {
         const confirmed = await confirm({
             title: "Татгалзах",
             message: "Энэ засварын хүсэлтийг татгалзахдаа итгэлтэй байна уу?",
@@ -566,11 +589,13 @@ export default function QuestionsPage() {
         });
         if (!confirmed) return;
         try {
-            await updateDoc(doc(db, "corrections", correctionId), { status: "rejected" });
+            await updateDoc(doc(db, "corrections", correction.id), { status: "rejected" });
+            await notifyCorrectionResult(correction, "rejected");
             queryClient.invalidateQueries({ queryKey: ["admin_corrections"] });
             toast.success("Засвар татгалзагдлаа");
-        } catch {
-            toast.error("Алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[handleRejectCorrection]", err);
+            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
         }
     };
 
@@ -746,8 +771,9 @@ export default function QuestionsPage() {
             setPendingQuestions([]);
             setInvalidQuestions([]);
             queryClient.invalidateQueries({ queryKey: ["admin_questions"] });
-        } catch {
-            toast.error("Хадгалахад алдаа гарлаа.");
+        } catch (err: unknown) {
+            console.error("[handleBulkSave]", err);
+            toast.error(err instanceof Error ? err.message : "Хадгалахад алдаа гарлаа.");
         } finally {
             setIsSavingBulk(false);
         }
@@ -1264,14 +1290,14 @@ export default function QuestionsPage() {
                                             </div>
                                             <div className="flex gap-2">
                                                 <button
-                                                    onClick={() => handleRejectCorrection(c.id)}
+                                                    onClick={() => handleRejectCorrection(c)}
                                                     className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors"
                                                 >
                                                     <XCircle className="w-3.5 h-3.5" />
                                                     Татгалзах
                                                 </button>
                                                 <button
-                                                    onClick={() => handleApproveCorrection(c.id)}
+                                                    onClick={() => handleApproveCorrection(c)}
                                                     className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors"
                                                 >
                                                     <CheckCircle className="w-3.5 h-3.5" />

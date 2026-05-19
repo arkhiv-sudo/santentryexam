@@ -1,5 +1,5 @@
 import { db } from "@/lib/firebase";
-import { collection, addDoc, getDocs, doc, updateDoc, query, where, orderBy, Timestamp, deleteDoc } from "firebase/firestore";
+import { collection, addDoc, getDocs, doc, updateDoc, getDoc, query, where, orderBy, Timestamp, serverTimestamp, writeBatch } from "firebase/firestore";
 
 export interface RetakeRequest {
     id: string;
@@ -67,50 +67,123 @@ export const RetakeService = {
         });
     },
 
-    /** Admin approves the request, resetting the registration and old exam results */
+    /** Admin approves the request, resetting the registration and old exam results.
+     *  FIX 3 & FIX 18: Uses a single Firestore writeBatch for atomicity. Also deletes
+     *  the existing submission so the duplicate-submission guard in the questions/submit
+     *  routes does not block the student from retaking the exam.
+     *  FIX F1: Enforce exam.maxAttempts (original + retakes) before approving. */
     approveRequest: async (requestId: string, studentId: string, examId: string): Promise<void> => {
-        const batchPromises: Promise<void>[] = [];
-
-        // 1. Update request status
-        batchPromises.push(
-            updateDoc(doc(db, RETAKE_REQUESTS, requestId), {
-                status: "approved",
-                resolvedAt: Timestamp.now()
-            })
-        );
-
-        // 2. Clear registration record (reset status to "registered", remove times, answers)
-        const regSnapshot = await getDocs(query(collection(db, REGISTRATIONS), where("studentId", "==", studentId), where("examId", "==", examId)));
-        if (!regSnapshot.empty) {
-            const regId = regSnapshot.docs[0].id;
-            batchPromises.push(
-                updateDoc(doc(db, REGISTRATIONS, regId), {
-                    status: "registered",
-                    startedAt: null,
-                    completedAt: null,
-                    draftAnswers: null,
-                    violations: 0
-                })
-            );
+        // FIX F1: Check max attempts. If exam.maxAttempts is set, count existing approved
+        // retakes for this student+exam and refuse to approve when the cap is reached.
+        const examSnap = await getDoc(doc(db, "exams", examId));
+        if (examSnap.exists()) {
+            const examData = examSnap.data() as { maxAttempts?: number };
+            if (typeof examData.maxAttempts === "number" && examData.maxAttempts > 0) {
+                const approvedSnap = await getDocs(query(
+                    collection(db, RETAKE_REQUESTS),
+                    where("studentId", "==", studentId),
+                    where("examId", "==", examId),
+                    where("status", "==", "approved"),
+                ));
+                if (approvedSnap.size >= examData.maxAttempts - 1) {
+                    throw new Error(`Дээд хязгаар (${examData.maxAttempts}) хэтэрсэн`);
+                }
+            }
         }
 
-        // 3. Delete existing exam result so they don't show up in rankings or past grades
-        const resultsSnapshot = await getDocs(query(collection(db, EXAM_RESULTS), where("studentId", "==", studentId), where("examId", "==", examId)));
-        resultsSnapshot.forEach(r => {
-            batchPromises.push(deleteDoc(doc(db, EXAM_RESULTS, r.id)));
+        const batch = writeBatch(db);
+
+        // 1. Update request status
+        batch.update(doc(db, RETAKE_REQUESTS, requestId), {
+            status: "approved",
+            resolvedAt: Timestamp.now()
         });
 
-        // Submissions can remain for historical auditing, or we could delete them.
-        // For now, leaving submissions is fine as long as ExamResult is cleared and Registration is reset.
+        // 2. Reset registration: set status back to "registered" and clear all in-progress fields
+        const regSnapshot = await getDocs(query(collection(db, REGISTRATIONS), where("studentId", "==", studentId), where("examId", "==", examId)));
+        if (!regSnapshot.empty) {
+            const regRef = doc(db, REGISTRATIONS, regSnapshot.docs[0].id);
+            batch.update(regRef, {
+                status: "registered",
+                startedAt: null,
+                completedAt: null,
+                draftAnswers: {},
+                violations: 0,
+                forceSubmitted: false,
+            });
+        }
 
-        await Promise.all(batchPromises);
+        // 3. Delete existing exam results so they don't appear in rankings or past grades
+        const resultsSnapshot = await getDocs(query(collection(db, EXAM_RESULTS), where("studentId", "==", studentId), where("examId", "==", examId)));
+        resultsSnapshot.docs.forEach(r => batch.delete(doc(db, EXAM_RESULTS, r.id)));
+
+        // 4. FIX 3: Delete existing submissions so the duplicate-submission check in
+        //    /api/exam/[examId]/questions and /api/exam/[examId]/submit doesn't block the retake.
+        const subsSnapshot = await getDocs(query(collection(db, "submissions"), where("studentId", "==", studentId), where("examId", "==", examId)));
+        subsSnapshot.docs.forEach(d => batch.delete(doc(db, "submissions", d.id)));
+
+        // Commit all changes atomically
+        await batch.commit();
+
+        // Notify student of approval (outside batch — not critical path)
+        await addDoc(collection(db, "notifications"), {
+            recipientId: studentId,
+            type: "retake_approved",
+            title: "Дахин өгөх хүсэлт зөвшөөрөгдлөө",
+            message: "Таны дахин шалгалт өгөх хүсэлт зөвшөөрөгдсөн.",
+            read: false,
+            createdAt: serverTimestamp(),
+        });
+    },
+
+    /** FIX C3: Bulk approve a list of retake requests. Reads each request to obtain
+     *  studentId/examId and reuses the per-request approveRequest implementation. */
+    bulkApprove: async (requestIds: string[]): Promise<{ successful: number; failed: number }> => {
+        const results = await Promise.allSettled(
+            requestIds.map(async (id) => {
+                const snap = await getDoc(doc(db, RETAKE_REQUESTS, id));
+                if (!snap.exists()) throw new Error("Request not found");
+                const data = snap.data() as { studentId: string; examId: string };
+                await RetakeService.approveRequest(id, data.studentId, data.examId);
+            })
+        );
+        const successful = results.filter(r => r.status === "fulfilled").length;
+        const failed = results.length - successful;
+        return { successful, failed };
+    },
+
+    /** FIX C3: Bulk reject a list of retake requests. */
+    bulkReject: async (requestIds: string[]): Promise<{ successful: number; failed: number }> => {
+        const results = await Promise.allSettled(
+            requestIds.map(async (id) => {
+                const snap = await getDoc(doc(db, RETAKE_REQUESTS, id));
+                if (!snap.exists()) throw new Error("Request not found");
+                const data = snap.data() as { studentId?: string };
+                await RetakeService.rejectRequest(id, data.studentId);
+            })
+        );
+        const successful = results.filter(r => r.status === "fulfilled").length;
+        const failed = results.length - successful;
+        return { successful, failed };
     },
 
     /** Admin rejects the request */
-    rejectRequest: async (requestId: string): Promise<void> => {
+    rejectRequest: async (requestId: string, studentId?: string): Promise<void> => {
         await updateDoc(doc(db, RETAKE_REQUESTS, requestId), {
             status: "rejected",
             resolvedAt: Timestamp.now()
         });
+
+        // Notify student of rejection if studentId is provided
+        if (studentId) {
+            await addDoc(collection(db, "notifications"), {
+                recipientId: studentId,
+                type: "retake_rejected",
+                title: "Дахин өгөх хүсэлт татгалзагдлаа",
+                message: "Таны дахин шалгалт өгөх хүсэлт татгалзагдсан байна. Дэлгэрэнгүй мэдээлэл авахыг хүсвэл багш эсвэл админтай холбогдоно уу.",
+                read: false,
+                createdAt: serverTimestamp(),
+            });
+        }
     }
 };

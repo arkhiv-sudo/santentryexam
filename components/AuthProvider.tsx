@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, useRef } from "react";
+import { useRouter, usePathname } from "next/navigation";
 import { User, onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 import { doc, getDoc } from "firebase/firestore";
@@ -25,8 +26,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [user, setUser] = useState<User | null>(null);
     const [profile, setProfile] = useState<UserProfile | null>(null);
     const [loading, setLoading] = useState(true);
+    const router = useRouter();
+    const pathname = usePathname();
 
     const lastRefreshRef = useRef<number>(0);
+
+    // FIX C4: If the profile has mustChangePassword=true, force the user to /change-password.
+    useEffect(() => {
+        if (profile?.mustChangePassword && pathname !== "/change-password") {
+            router.push("/change-password");
+        }
+    }, [profile?.mustChangePassword, pathname, router]);
 
     useEffect(() => {
         const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -53,7 +63,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                             soum: data.soum,
                             school: data.school,
                             class: data.class,
-                            children: data.children
+                            children: data.children,
+                            mustChangePassword: data.mustChangePassword,
                         });
                     } else {
                         // Fallback for new users (Google)

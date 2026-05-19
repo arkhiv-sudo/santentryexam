@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { db, functions } from "@/lib/firebase";
-import { doc, onSnapshot } from "firebase/firestore";
+import { doc, onSnapshot, setDoc, getDoc, serverTimestamp } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { SettingsService } from "@/lib/services/settings-service";
 import { Lesson, Subject } from "@/types";
@@ -27,6 +27,8 @@ export default function SettingsPage() {
     const router = useRouter();
     const [saving, setSaving] = useState(false);
     const [isLive, setIsLive] = useState(false);
+    const [systemName, setSystemName] = useState("Шалгалтын систем");
+    const [language, setLanguage] = useState("mn");
     const [usageLoading, setUsageLoading] = useState(false);
     const queryClient = useQueryClient();
 
@@ -114,6 +116,24 @@ export default function SettingsPage() {
         return () => unsubscribe();
     }, [profile]);
 
+    // Load existing system settings from Firestore on mount
+    useEffect(() => {
+        if (profile?.role !== "admin") return;
+        const loadSettings = async () => {
+            try {
+                const snap = await getDoc(doc(db, "system", "settings"));
+                if (snap.exists()) {
+                    const data = snap.data();
+                    if (data.systemName) setSystemName(data.systemName);
+                    if (data.language) setLanguage(data.language);
+                }
+            } catch (err) {
+                console.error("Failed to load system settings:", err);
+            }
+        };
+        loadSettings();
+    }, [profile]);
+
     useEffect(() => {
         if (profile?.role !== "admin") return;
 
@@ -143,11 +163,19 @@ export default function SettingsPage() {
 
     const handleSave = async () => {
         setSaving(true);
-        // Simulation of save
-        setTimeout(() => {
-            setSaving(false);
+        try {
+            await setDoc(doc(db, "system", "settings"), {
+                systemName,
+                language,
+                updatedAt: serverTimestamp(),
+            }, { merge: true });
             toast.success("Тохиргоо хадгалагдлаа");
-        }, 1000);
+        } catch (err) {
+            console.error("Failed to save settings:", err);
+            toast.error("Тохиргоо хадгалахад алдаа гарлаа");
+        } finally {
+            setSaving(false);
+        }
     };
 
     const handleAddLesson = async () => {
@@ -158,7 +186,10 @@ export default function SettingsPage() {
             setNewLessonName("");
             queryClient.invalidateQueries({ queryKey: ["lessons"] });
             toast.success("Хичээл нэмэгдлээ");
-        } catch { toast.error("Алдаа гарлаа"); }
+        } catch (err: unknown) {
+            console.error("[settings.handleAddLesson]", err);
+            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
+        }
         finally { setAddingLesson(false); }
     };
 
@@ -167,7 +198,10 @@ export default function SettingsPage() {
             await SettingsService.deleteLesson(id);
             queryClient.invalidateQueries({ queryKey: ["lessons"] });
             toast.success("Хичээл устгагдлаа");
-        } catch { toast.error("Устгахад алдаа гарлаа"); }
+        } catch (err: unknown) {
+            console.error("[settings.handleDeleteLesson]", err);
+            toast.error(err instanceof Error ? err.message : "Устгахад алдаа гарлаа");
+        }
     };
 
     const handleAddSubject = async () => {
@@ -180,7 +214,10 @@ export default function SettingsPage() {
             queryClient.invalidateQueries({ queryKey: ["subjects_list_settings"] });
             queryClient.invalidateQueries({ queryKey: ["subjects_list"] });
             toast.success("Сэдэв нэмэгдлээ");
-        } catch { toast.error("Алдаа гарлаа"); }
+        } catch (err: unknown) {
+            console.error("[settings.handleAddSubject]", err);
+            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
+        }
         finally { setAddingSubject(false); }
     };
 
@@ -190,7 +227,10 @@ export default function SettingsPage() {
             queryClient.invalidateQueries({ queryKey: ["subjects_list_settings"] });
             queryClient.invalidateQueries({ queryKey: ["subjects_list"] });
             toast.success("Сэдэв устгагдлаа");
-        } catch { toast.error("Устгахад алдаа гарлаа"); }
+        } catch (err: unknown) {
+            console.error("[settings.handleDeleteSubject]", err);
+            toast.error(err instanceof Error ? err.message : "Устгахад алдаа гарлаа");
+        }
     };
 
 
@@ -218,8 +258,9 @@ export default function SettingsPage() {
                                     success: 'Амжилттай шинэчлэгдлээ',
                                     error: 'Алдаа гарлаа'
                                 });
-                            } catch (e) {
-                                console.error(e);
+                            } catch (e: unknown) {
+                                console.error("[recalculateStats]", e);
+                                toast.error(e instanceof Error ? e.message : "Алдаа гарлаа");
                             }
                         }}
                     >
@@ -513,11 +554,14 @@ export default function SettingsPage() {
                         <div className="grid gap-4 md:grid-cols-2">
                             <div className="space-y-2">
                                 <label className="text-sm font-medium text-slate-700">Системийн нэр</label>
-                                <Input defaultValue="Шалгалтын систем" />
+                                <Input
+                                    value={systemName}
+                                    onChange={e => setSystemName(e.target.value)}
+                                />
                             </div>
                             <div className="space-y-2">
                                 <label className="text-sm font-medium text-slate-700">Үндсэн хэл</label>
-                                <Select defaultValue="mn">
+                                <Select value={language} onChange={e => setLanguage(e.target.value)}>
                                     <option value="mn">Монгол</option>
                                     <option value="en">English</option>
                                 </Select>

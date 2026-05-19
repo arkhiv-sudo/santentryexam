@@ -70,8 +70,9 @@ export default function AdminSubjectsPage() {
             setNewName("");
             queryClient.invalidateQueries({ queryKey: ["subjects"] });
             toast.success("Сэдэв амжилттай нэмэгдлээ");
-        } catch {
-            toast.error("Алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[subjects.handleCreate]", err);
+            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
         }
     };
 
@@ -87,8 +88,9 @@ export default function AdminSubjectsPage() {
             await SettingsService.deleteSubject(id);
             queryClient.invalidateQueries({ queryKey: ["subjects"] });
             toast.success("Устгагдлаа");
-        } catch {
-            toast.error("Устгахад алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[subjects.handleDelete]", err);
+            toast.error(err instanceof Error ? err.message : "Устгахад алдаа гарлаа");
         }
     };
 
@@ -106,8 +108,9 @@ export default function AdminSubjectsPage() {
             setSelectedIds(new Set());
             queryClient.invalidateQueries({ queryKey: ["subjects"] });
             toast.success("Сонгосон сэдвүүдийг устгалаа");
-        } catch {
-            toast.error("Сэдвүүдийг устгахад алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[subjects.handleBulkDelete]", err);
+            toast.error(err instanceof Error ? err.message : "Сэдвүүдийг устгахад алдаа гарлаа");
         }
     };
 
@@ -161,6 +164,11 @@ export default function AdminSubjectsPage() {
             setPendingSubjects(prev => [...prev, ...newPending]);
             if (fileInputRef.current) fileInputRef.current.value = "";
         };
+        reader.onerror = (event) => {
+            console.error("[subjects.handleFileUpload] FileReader error", event);
+            toast.error("CSV файл уншихад алдаа гарлаа");
+            if (fileInputRef.current) fileInputRef.current.value = "";
+        };
         reader.readAsText(file);
     };
 
@@ -187,8 +195,9 @@ export default function AdminSubjectsPage() {
             toast.success(`${pendingSubjects.length} сэдэв амжилттай хадгалагдлаа`);
             setPendingSubjects([]);
             queryClient.invalidateQueries({ queryKey: ["subjects"] });
-        } catch {
-            toast.error("Бөөнөөр хадгалахад алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[subjects.handleBulkSave]", err);
+            toast.error(err instanceof Error ? err.message : "Бөөнөөр хадгалахад алдаа гарлаа");
         } finally {
             setSaving(false);
         }

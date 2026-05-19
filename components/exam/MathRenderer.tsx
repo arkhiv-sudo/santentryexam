@@ -7,8 +7,32 @@ interface MathRendererProps {
     content: string;
 }
 
+// FIX 15: Sanitize LaTeX input to block dangerous macros that could be used to
+// exfiltrate data, link to malicious URLs, or attempt arbitrary file I/O via
+// TeX engine extensions. KaTeX's `trust: false` covers most attacks, but we
+// also pre-filter user input as defense-in-depth.
+function sanitizeLatex(input: string): string {
+    if (!input) return '';
+    let s = String(input);
+    // Block dangerous LaTeX commands that could execute scripts or link out
+    const blockedCommands = [
+        'href', 'url', 'includegraphics', 'input', 'include',
+        'write', 'openout', 'closeout', 'read', 'openin', 'closein',
+    ];
+    for (const cmd of blockedCommands) {
+        const re = new RegExp(`\\\\${cmd}\\b`, 'gi');
+        s = s.replace(re, `\\text{[${cmd} blocked]}`);
+    }
+    // Block javascript: URLs anywhere
+    s = s.replace(/javascript:/gi, 'blocked:');
+    return s;
+}
+
 export default function MathRenderer({ content }: MathRendererProps) {
     if (!content) return null;
+
+    // FIX 15: sanitize before any LaTeX parsing
+    const safeContent = sanitizeLatex(content);
 
     // Function to wrap triple backtick blocks in styled div
     const processCodeBlocks = (text: string) => {
@@ -49,7 +73,7 @@ export default function MathRenderer({ content }: MathRendererProps) {
 
     return (
         <div className="math-content break-words whitespace-pre-wrap leading-relaxed transition-all duration-200">
-            {processCodeBlocks(content)}
+            {processCodeBlocks(safeContent)}
         </div>
     );
 }

@@ -4,6 +4,10 @@ import { adminAuth } from "@/lib/firebase-admin";
 import { redirect } from "next/navigation";
 import { UserRole } from "@/types";
 
+// FIX 37: TODO — Build /account/sessions page that calls adminAuth.listSessionCookies(uid)
+// and allows users to revoke individual sessions. Currently users can only logout
+// (revokes their own active cookie) or admin must call disable-user to nuke them all.
+
 export async function getCurrentUser() {
     const session = (await cookies()).get("__session")?.value;
 
@@ -46,4 +50,28 @@ export async function requireRole(allowedRoles: UserRole[]) {
     }
 
     return user;
+}
+
+// FIX 11: Check if the session is "fresh" (created within last N minutes)
+// Used for sensitive admin actions. Opt-in — not applied to all routes.
+export async function requireFreshAuth(maxAgeMinutes = 30): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const user = await getCurrentUser();
+    if (!user) return { ok: false, reason: 'Not authenticated' };
+
+    // session cookie info — verifySessionCookie returns { auth_time, iat, exp }
+    const cookieStore = await cookies();
+    const session = cookieStore.get('__session')?.value;
+    if (!session) return { ok: false, reason: 'No session' };
+
+    try {
+        const decoded = await adminAuth.verifySessionCookie(session, true);
+        const authTime = decoded.auth_time as number; // in seconds
+        const ageMin = (Date.now() / 1000 - authTime) / 60;
+        if (ageMin > maxAgeMinutes) {
+            return { ok: false, reason: `Дахин нэвтэрсэн нь ${maxAgeMinutes} минутаас давсан` };
+        }
+        return { ok: true };
+    } catch {
+        return { ok: false, reason: 'Invalid session' };
+    }
 }

@@ -13,6 +13,7 @@ import { UploadService } from "@/lib/services/upload-service";
 import { Subject } from "@/types";
 import { QuestionPreviewModal } from "./exam/QuestionPreviewModal";
 import QuestionPreview from "./exam/QuestionPreview";
+import { toast } from "sonner";
 
 interface QuestionFormProps {
     initialData?: Question;
@@ -58,19 +59,25 @@ export function QuestionForm({
     });
 
     useEffect(() => {
+        let cancelled = false;
         const loadSettings = async () => {
             try {
                 const [sData, lData] = await Promise.all([
                     SettingsService.getSubjects(),
                     SettingsService.getLessons()
                 ]);
+                if (cancelled) return;
                 setAllSubjects(sData);
                 setAllLessons(lData);
-            } catch (error) {
-                console.error("Failed to load settings:", error);
+            } catch (error: unknown) {
+                if (cancelled) return;
+                console.error("[loadSettings]", error);
+                const msg = error instanceof Error ? error.message : "Хичээл/Сэдвийн мэдээллийг татахад алдаа гарлаа";
+                toast.error(msg);
             }
         };
         loadSettings();
+        return () => { cancelled = true; };
     }, []);
 
     useEffect(() => {
@@ -144,8 +151,10 @@ export function QuestionForm({
             }
             newOptionImages[index] = url;
             setFormData({ ...formData, optionImages: newOptionImages });
-        } catch (error) {
-            console.error("Option image upload failed:", error);
+        } catch (error: unknown) {
+            console.error("[handleOptionImageUpload]", error);
+            const msg = error instanceof Error ? error.message : "Сонголтын зураг ачаалахад алдаа гарлаа";
+            toast.error(msg);
         }
     };
 
@@ -169,8 +178,10 @@ export function QuestionForm({
             } else {
                 setFormData({ ...formData, mediaUrl: url, mediaType: 'image' });
             }
-        } catch (error) {
-            console.error("Upload failed:", error);
+        } catch (error: unknown) {
+            console.error("[handleMediaUpload]", error);
+            const msg = error instanceof Error ? error.message : "Зураг ачаалахад алдаа гарлаа";
+            toast.error(msg);
         } finally {
             if (isSolution) setUploadingSolutionMedia(false);
             else setUploadingMedia(false);
@@ -179,7 +190,13 @@ export function QuestionForm({
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        await onSubmit({ ...formData, lessonId: selectedLessonId } as Omit<Question, "id">);
+        try {
+            await onSubmit({ ...formData, lessonId: selectedLessonId } as Omit<Question, "id">);
+        } catch (error: unknown) {
+            console.error("[QuestionForm.handleSubmit]", error);
+            const msg = error instanceof Error ? error.message : "Асуултыг хадгалахад алдаа гарлаа";
+            toast.error(msg);
+        }
     };
 
     return (

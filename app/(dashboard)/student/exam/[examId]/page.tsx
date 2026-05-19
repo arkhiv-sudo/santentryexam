@@ -10,10 +10,10 @@ import MathRenderer from "@/components/exam/MathRenderer";
 import { toast } from "sonner";
 import { ExamService } from "@/lib/services/exam-service";
 import { RetakeService } from "@/lib/services/retake-service";
-import { useServerTime, getServerTimeValue } from "@/hooks/useServerTime";
+import { useServerTime, getServerTimeValue, offsetReadyPromise } from "@/hooks/useServerTime";
 import { ExamQuestion, Registration } from "@/types";
 import { db } from "@/lib/firebase";
-import { doc, onSnapshot } from "firebase/firestore";
+import { doc, onSnapshot, addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { AlertTriangle, Clock, Send, ChevronLeft, ChevronRight, CheckCircle, Loader2 } from "lucide-react";
 import ExamSupportChat from "@/components/exam/ExamSupportChat";
 
@@ -27,6 +27,7 @@ interface ExamMeta {
     scheduledAt: number;
     registrationId: string;
     registrationStatus: string;
+    passingScore?: number;
 }
 
 export default function ExamPage() {
@@ -49,21 +50,42 @@ export default function ExamPage() {
     const [timeLeft, setTimeLeft] = useState(0);
     const [submitting, setSubmitting] = useState(false);
     const [submitted, setSubmitted] = useState(false);
+    const [submitFailed, setSubmitFailed] = useState(false);
     const [violations, setViolations] = useState(0);
     const [showViolationWarning, setShowViolationWarning] = useState(false);
     const [preloading, setPreloading] = useState(false);
     const [preloadCountdown, setPreloadCountdown] = useState(15);
     const [liveReg, setLiveReg] = useState<Registration | null>(null);
     const [retakeRequested, setRetakeRequested] = useState(false);
+    const [acknowledgedRules, setAcknowledgedRules] = useState(false);
+    // FIX E1: Retake reason modal
+    const [showRetakeDialog, setShowRetakeDialog] = useState(false);
+    const [retakeReason, setRetakeReason] = useState("");
+    // FIX 16: Question report modal — replaces window.prompt with a proper UI
+    const [reportingQuestionId, setReportingQuestionId] = useState<string | null>(null);
+    const [reportReason, setReportReason] = useState("");
+    const [reportSubmitting, setReportSubmitting] = useState(false);
+    // FIX E2: Capture submit result so we can show score on the success screen
+    const [submitResult, setSubmitResult] = useState<{ score: number; percentage: number; passed: boolean } | null>(null);
 
     const violationsRef = useRef(0);
     const submittedRef = useRef(false);
     const startedRef = useRef(false);
     const answersRef = useRef(answers);
     const handleSubmitRef = useRef<() => void>(() => {});
+    const submitAttemptsRef = useRef(0);
+    // FIX 2: Track the real wall-clock start time to compute accurate timeTaken.
+    // Using Date.now() at submit time avoids the stale-closure issue with timeLeft state.
+    const examStartedAtRef = useRef<number>(0);
+    // A5: Fallback start time pulled from the registration's startedAt so that reloaders
+    // get an accurate timeTaken instead of being credited the full duration.
+    const regStartedAtRef = useRef<number>(0);
     // ✅ OPTIMIZATION: track last-saved snapshot so we skip the Firestore write
     // when the student hasn't changed any answer since the previous autosave.
     const lastSavedAnswersRef = useRef<string>("");
+    // A2: Stable shuffled option ordering per question (keyed by question id) so that
+    // re-renders don't reshuffle options mid-question.
+    const shuffledOptionsRef = useRef<Record<string, number[]>>({});
 
     useEffect(() => { answersRef.current = answers; }, [answers]);
 
@@ -93,19 +115,24 @@ export default function ExamPage() {
         }
     }, [examId, user]);
 
-    // ── Autosave answers every 30 seconds (only if changed) ──────────────────
+    // ── Autosave answers every 60 seconds (only if changed) ──────────────────
     useEffect(() => {
         if (!started || !user) return;
         const interval = setInterval(() => {
             const currentAnswers = answersRef.current;
             const serialized = JSON.stringify(currentAnswers);
-            // Skip both localStorage and Firestore write if nothing changed
+            // Skip localStorage write if nothing changed
             if (serialized === lastSavedAnswersRef.current) return;
             lastSavedAnswersRef.current = serialized;
             localStorage.setItem(AUTOSAVE_KEY(examId, user.uid), serialized);
+            // Only write to Firestore if answers changed since last save
             ExamService.saveDraftAnswers(user.uid, examId, currentAnswers).catch(() => {});
-        }, 30_000);
-        return () => clearInterval(interval);
+        }, 60_000);
+        return () => {
+            clearInterval(interval);
+            // Final save on unmount
+            ExamService.saveDraftAnswers(user.uid, examId, answersRef.current).catch(console.error);
+        };
     }, [started, examId, user]);
 
     // ── Prevent accidental window close ────────────────────────────────────
@@ -135,7 +162,7 @@ export default function ExamPage() {
                 submittedRef.current = true;
             }
         });
-        
+
         ExamService.getStudentRegistration(user.uid, examId).then(reg => {
             if (reg?.draftAnswers) {
                 setAnswers(prev => ({ ...prev, ...reg.draftAnswers }));
@@ -148,8 +175,28 @@ export default function ExamPage() {
                 violationsRef.current = reg.violations;
                 setViolations(reg.violations);
             }
+            // A5: Capture the server-side startedAt so that a reloader's timeTaken
+            // is computed from the actual exam start, not from full duration.
+            if (reg?.startedAt) {
+                const startedMs = reg.startedAt instanceof Date
+                    ? reg.startedAt.getTime()
+                    : new Date(reg.startedAt as unknown as string | number).getTime();
+                if (!Number.isNaN(startedMs)) {
+                    regStartedAtRef.current = startedMs;
+                }
+            }
         }).catch(() => {});
     }, [examId, user]);
+
+    // ── FIX 17: Check for existing retake request on mount to prevent duplicates ──
+    useEffect(() => {
+        if (!user?.uid || !examId) return;
+        RetakeService.getStudentRequest(user.uid, examId)
+            .then(existing => {
+                if (existing) setRetakeRequested(true);
+            })
+            .catch(() => {});
+    }, [user?.uid, examId]);
 
     // ── Fetch questions via secure API route ───────────────────────────────
     useEffect(() => {
@@ -172,27 +219,12 @@ export default function ExamPage() {
                     scheduledAt: data.scheduledAt,
                     registrationId: data.registrationId,
                     registrationStatus: data.registrationStatus,
+                    passingScore: data.passingScore,
                 });
-                const shuffledQuestions = data.questions.map((q: ExamQuestion) => {
-                    if (q.type === 'multiple_choice' && q.options && q.options.length > 0) {
-                        const combined = q.options.map((opt, i) => ({
-                            opt,
-                            img: q.optionImages && q.optionImages.length > i ? q.optionImages[i] : null
-                        }));
-                        for (let i = combined.length - 1; i > 0; i--) {
-                            const j = Math.floor(Math.random() * (i + 1));
-                            [combined[i], combined[j]] = [combined[j], combined[i]];
-                        }
-                        
-                        const newQ = { ...q, options: combined.map(c => c.opt) };
-                        if (q.optionImages && q.optionImages.length > 0) {
-                            newQ.optionImages = combined.map(c => c.img as string);
-                        }
-                        return newQ;
-                    }
-                    return q;
-                });
-                setQuestions(shuffledQuestions);
+                // A2: Don't pre-shuffle options here on every fetch. We compute and cache
+                // a stable shuffled order per-question via getShuffledOptions() below so
+                // that the student sees the same option order across re-renders.
+                setQuestions(data.questions as ExamQuestion[]);
                 // #2 FIX: Compute remaining time from real scheduledAt so a late
                 // page-load or reload shows the correct countdown, not full duration.
                 const examEndMs = data.scheduledAt + data.duration * 60_000;
@@ -208,39 +240,104 @@ export default function ExamPage() {
         fetchQuestions();
     }, [examId, user, authLoading]);
 
+    // ── FIX 13: Re-compute timeLeft once server offset is known ───────────────
+    // If fetchQuestions ran before the NTP offset resolved, getServerTimeValue()
+    // returned local time (offset = 0). Once the offset promise resolves we
+    // recalculate the remaining time using the corrected server clock.
+    useEffect(() => {
+        let cancelled = false;
+        offsetReadyPromise.then(() => {
+            if (cancelled) return;
+            setMeta(prevMeta => {
+                if (!prevMeta) return prevMeta;
+                const examEndMs = prevMeta.scheduledAt + prevMeta.duration * 60_000;
+                const remaining = Math.floor((examEndMs - getServerTimeValue()) / 1000);
+                setTimeLeft(Math.max(0, remaining));
+                return prevMeta;
+            });
+        });
+        return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const MAX_SUBMIT_ATTEMPTS = 3;
+    const SUBMIT_DELAYS = [1000, 2000, 4000];
 
     // ── Submit exam ────────────────────────────────────────────────────────
     const attemptSubmit = useCallback(async (attempt: number = 1): Promise<void> => {
         if (!user || !meta) return;
+        if (attempt > MAX_SUBMIT_ATTEMPTS) {
+            submittedRef.current = false;
+            setSubmitting(false);
+            setIsOfflineRetrying(false);
+            setSubmitFailed(true);
+            toast.error("Серверт холбогдож чадсангүй. Дахин оролдоно уу эсвэл администратортай холбогдоно уу.");
+            return;
+        }
         try {
             const studentName = profile
                 ? `${profile.lastName} ${profile.firstName}`.trim()
                 : (user.email ?? user.uid);
 
-            const timeTaken = meta.duration * 60 - timeLeft;
+            // FIX 2 / A5: Compute timeTaken from the real wall-clock start time.
+            // Prefer the in-tab start (examStartedAtRef) and fall back to the
+            // registration's server-side startedAt for reloaders. Only as a last
+            // resort do we use the remaining-time fallback (which over-credits
+            // students who reload mid-exam).
+            const startMs = examStartedAtRef.current > 0
+                ? examStartedAtRef.current
+                : regStartedAtRef.current;
+            const timeTaken = startMs > 0
+                ? Math.floor((Date.now() - startMs) / 1000)
+                : meta.duration * 60 - Math.max(0, timeLeft);
 
+            // FIX 7: Use answersRef.current (always up-to-date) instead of the potentially
+            // stale answers closure captured at the time the callback was created.
             const res = await fetch(`/api/exam/${examId}/submit`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ answers, timeTaken, studentName })
+                body: JSON.stringify({ answers: answersRef.current, timeTaken, studentName })
             });
 
+            // B3: Server (5xx) errors are transient — retry like a network error
+            // before showing the failure screen.
+            if (res.status >= 500 && attempt < MAX_SUBMIT_ATTEMPTS) {
+                setIsOfflineRetrying(true);
+                const delay = SUBMIT_DELAYS[attempt - 1] ?? 4000;
+                toast.error(`Серверийн алдаа. Дахин оролдож байна... (${attempt}/${MAX_SUBMIT_ATTEMPTS})`);
+                setTimeout(() => attemptSubmit(attempt + 1), delay);
+                return;
+            }
+
             if (!res.ok) {
-                const data = await res.json();
+                const data = await res.json().catch(() => ({}));
                 throw new Error(data.error || "Алдаа гарлаа");
             }
 
+            // FIX E2: Capture the score returned by the submit API so we can show it on the success screen.
+            const data = await res.json().catch(() => ({}));
+            if (typeof data?.score === "number" && typeof data?.percentage === "number") {
+                setSubmitResult({
+                    score: data.score,
+                    percentage: data.percentage,
+                    passed: !!data.passed,
+                });
+            }
+
+            submitAttemptsRef.current = 0;
             localStorage.removeItem(AUTOSAVE_KEY(examId, user.uid));
             setSubmitted(true);
             setIsOfflineRetrying(false);
             setSubmitting(false);
+            setSubmitFailed(false);
             toast.success("Шалгалт амжилттай илгээгдлээ! Дүн тооцоологдох болно.");
         } catch (err: unknown) {
             const errorMsg = err instanceof Error ? err.message : String(err);
-            if (errorMsg === "Failed to fetch" || errorMsg.includes("NetworkError") || typeof navigator !== "undefined" && !navigator.onLine) {
+            if (errorMsg === "Failed to fetch" || errorMsg.includes("NetworkError") || (typeof navigator !== "undefined" && !navigator.onLine)) {
                 setIsOfflineRetrying(true);
-                toast.error(`Сүлжээ тасарсан байна. Дахин оролдож байна... (${attempt})`);
-                setTimeout(() => attemptSubmit(attempt + 1), 5000);
+                const delay = SUBMIT_DELAYS[attempt - 1] ?? 4000;
+                toast.error(`Сүлжээ тасарсан байна. Дахин оролдож байна... (${attempt}/${MAX_SUBMIT_ATTEMPTS})`);
+                setTimeout(() => attemptSubmit(attempt + 1), delay);
             } else {
                 submittedRef.current = false;
                 setSubmitting(false);
@@ -249,7 +346,7 @@ export default function ExamPage() {
                 toast.error(errorMsg || "Илгээхэд алдаа гарлаа. Дахин баталгаажуулна уу.");
             }
         }
-    }, [user, profile, examId, answers, timeLeft, meta]);
+    }, [user, profile, examId, meta]); // answers and timeLeft removed: we now read answersRef.current and compute timeTaken from examStartedAtRef
 
     const handleSubmit = useCallback(async () => {
         if (submittedRef.current || !user || !meta) return;
@@ -265,7 +362,10 @@ export default function ExamPage() {
     // ── Countdown timer ────────────────────────────────────────────────────
     useEffect(() => {
         if (!started || submittedRef.current || !meta) return;
-        if (timeLeft <= 0) {
+        // FIX 6: Guard against double-submit when this effect re-runs because extendedTime
+        // changed after the exam was already submitted. Without this guard, the effect
+        // re-executes, sees timeLeft <= 0, and tries to submit again.
+        if (timeLeft <= 0 && !submittedRef.current) {
             toast.error("Хугацаа дууслаа! Шалгалт автоматаар илгээгдлээ.");
             handleSubmitRef.current();
             return;
@@ -298,7 +398,9 @@ export default function ExamPage() {
              setPreloading(false);
              setStarted(true);
              startedRef.current = true;
-             
+             // FIX 2: Record exact wall-clock start time for accurate timeTaken calculation
+             examStartedAtRef.current = Date.now();
+
              ExamService.startExam(user!.uid, examId).catch(() => {});
              
              ExamService.getStudentRegistration(user!.uid, examId).then(reg => {
@@ -318,26 +420,31 @@ export default function ExamPage() {
     }, [preloading, preloadCountdown, user, examId]);
 
     // ── Anti-cheating: tab switch detection ────────────────────────────────
+    // B4: Use ONLY the server-confirmed violation count as the authoritative
+    // value. We no longer optimistically bump violationsRef before the server
+    // responds — that caused two-count drift on flaky networks.
     const handleVisibilityChange = useCallback(async () => {
         if (!startedRef.current || submittedRef.current || !user) return;
-        if (document.hidden) {
-            const newCount = violationsRef.current + 1;
-            violationsRef.current = newCount;
-            setViolations(newCount);
+        if (document.visibilityState !== "hidden") return;
 
-            // Record in Firestore
-            await ExamService.recordViolation(user.uid, examId).catch(() => null);
-
-            if (newCount >= MAX_VIOLATIONS) {
-                toast.error("Хуулах оролдлого хэт олон удаа бүртгэгдлээ. Шалгалт автоматаар дуусав.");
-                handleSubmit();
-            } else {
-                setShowViolationWarning(true);
-                setTimeout(() => setShowViolationWarning(false), 4000);
-                toast.warning(`Анхааруулга: Цонх солилт бүртгэгдлээ (${newCount}/${MAX_VIOLATIONS})`);
-            }
+        const serverCount = await ExamService.recordViolation(user.uid, examId).catch(() => null);
+        if (serverCount === null) {
+            console.warn("Violation Firestore write failed; not updating local count");
+            return;
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+
+        violationsRef.current = serverCount;
+        setViolations(serverCount);
+
+        if (serverCount >= MAX_VIOLATIONS) {
+            toast.error("Дүрэм зөрчсөн тул шалгалт автоматаар дууссан");
+            setShowViolationWarning(true);
+            handleSubmitRef.current();
+        } else {
+            setShowViolationWarning(true);
+            setTimeout(() => setShowViolationWarning(false), 4000);
+            toast.warning(`Анхааруулга: Цонх солилт бүртгэгдлээ (${serverCount}/${MAX_VIOLATIONS})`);
+        }
     }, [user, examId]);
 
     // ── Anti-cheating: disable right-click & shortcuts ─────────────────────
@@ -370,16 +477,48 @@ export default function ExamPage() {
     // ── Start exam ─────────────────────────────────────────────────────────
     const handleStart = async () => {
         if (!user || !meta) return;
+        // B1: Fire startExam SERVER-SIDE immediately when the student clicks the
+        // start button, so the registration's startedAt reflects the real start
+        // (not the moment after the 15s preload). Errors are non-fatal.
+        try {
+            await ExamService.startExam(user.uid, examId);
+        } catch (err) {
+            console.error("startExam failed:", err);
+        }
         setPreloading(true);
     };
 
 
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
+    // A2: Stable per-session shuffle of multiple-choice options. The order is
+    // computed lazily the first time we render a question and cached in a ref
+    // so subsequent re-renders return the same order. Each entry returns the
+    // option text + image and the original index (so the answer we store is
+    // still the original option TEXT — grading is unaffected).
+    const getShuffledOptions = (question: ExamQuestion): { text: string; image?: string; originalIdx: number }[] => {
+        if (!question.options) return [];
+        if (!shuffledOptionsRef.current[question.id]) {
+            const indices = question.options.map((_, i) => i);
+            // Fisher–Yates
+            for (let i = indices.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [indices[i], indices[j]] = [indices[j], indices[i]];
+            }
+            shuffledOptionsRef.current[question.id] = indices;
+        }
+        return shuffledOptionsRef.current[question.id].map(i => ({
+            text: question.options![i],
+            image: question.optionImages?.[i],
+            originalIdx: i,
+        }));
+    };
+
     const formatTime = (s: number) => {
-        const h = Math.floor(s / 3600);
-        const m = Math.floor((s % 3600) / 60);
-        const sec = s % 60;
+        const displaySeconds = Math.max(0, s);
+        const h = Math.floor(displaySeconds / 3600);
+        const m = Math.floor((displaySeconds % 3600) / 60);
+        const sec = displaySeconds % 60;
         if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
         return `${m}:${String(sec).padStart(2, "0")}`;
     };
@@ -414,6 +553,39 @@ export default function ExamPage() {
         );
     }
 
+    if (submitFailed) {
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+                <Card className="max-w-md w-full">
+                    <CardContent className="p-8 text-center space-y-6">
+                        <AlertTriangle className="w-12 h-12 text-red-500 mx-auto" />
+                        <div>
+                            <h2 className="text-xl font-bold text-slate-800 mb-2">Илгээхэд алдаа гарлаа</h2>
+                            <p className="text-slate-500 text-sm">Серверт холбогдож чадсангүй. Дахин оролдоно уу эсвэл администратортай холбогдоно уу.</p>
+                        </div>
+                        <Button
+                            onClick={() => {
+                                setSubmitFailed(false);
+                                submittedRef.current = false;
+                                submitAttemptsRef.current = 0;
+                                setSubmitting(true);
+                                setIsOfflineRetrying(false);
+                                submittedRef.current = true;
+                                attemptSubmit(1);
+                            }}
+                            className="w-full bg-blue-600 text-white"
+                        >
+                            Дахин оролдох
+                        </Button>
+                        <Button onClick={() => router.push("/student")} variant="outline" className="w-full">
+                            Буцах
+                        </Button>
+                    </CardContent>
+                </Card>
+            </div>
+        );
+    }
+
     // ─── Render: already submitted ────────────────────────────────────────────
     if (submitted) {
         const _examEndMs = meta ? meta.scheduledAt + meta.duration * 60_000 + (liveReg?.extendedTime ? liveReg.extendedTime * 1000 : 0) : 0;
@@ -430,6 +602,18 @@ export default function ExamPage() {
                             <h2 className="text-2xl font-black text-slate-800 mb-2">Шалгалт илгээгдлээ!</h2>
                             <p className="text-slate-500">Таны хариулт хадгалагдсан. Дүн тооцоологдсоны дараа харагдах болно.</p>
                         </div>
+
+                        {/* FIX E2: Show the captured score breakdown when available */}
+                        {submitResult && (
+                            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-2xl p-6 my-4 text-center">
+                                <div className="text-5xl font-black text-blue-700">{submitResult.percentage.toFixed(1)}%</div>
+                                <div className="text-slate-600 mt-2">Таны оноо: <strong>{submitResult.score}</strong></div>
+                                <div className={`mt-3 inline-block px-4 py-1 rounded-full font-bold ${submitResult.passed ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
+                                    {submitResult.passed ? "✓ Тэнцлээ" : "✗ Тэнцээгүй"}
+                                </div>
+                            </div>
+                        )}
+
                         <Button onClick={() => router.push("/student")} className="w-full bg-blue-600 text-white">
                             Хянах самбар руу буцах
                         </Button>
@@ -437,24 +621,12 @@ export default function ExamPage() {
                         {_canRetake && user && (
                             <div className="pt-4 mt-6 border-t border-slate-100">
                                 <p className="text-xs text-slate-400 mb-3">Техникийн эсвэл бусад асуудлаас болж шалгалт дутуу илгээгдсэн бол дахин өгөх хүсэлт илгээх боломжтой (Шалгалтын цаг дуусахаас өмнө).</p>
-                                <Button 
-                                    variant="outline" 
+                                <Button
+                                    variant="outline"
                                     disabled={retakeRequested}
-                                    onClick={async () => {
-                                        try {
-                                            await RetakeService.requestRetake({
-                                                studentId: user.uid,
-                                                examId,
-                                                reason: "Техникийн алдаанаас болж шалгалт дутуу зогссон",
-                                                studentName: profile ? `${profile.lastName} ${profile.firstName}` : user.email || user.uid,
-                                                examTitle: meta?.title || "Шалгалт"
-                                            });
-                                            setRetakeRequested(true);
-                                            toast.success("Дахин өгөх хүсэлт илгээгдлээ. Админ зөвшөөртөл түр хүлээнэ үү.");
-                                        } catch (e: unknown) {
-                                            const msg = e instanceof Error ? e.message : "Харамсалтай нь хүсэлт илгээхэд алдаа гарлаа.";
-                                            toast.error(msg);
-                                        }
+                                    onClick={() => {
+                                        setRetakeReason("");
+                                        setShowRetakeDialog(true);
                                     }}
                                     className="w-full text-slate-600 hover:text-blue-600 border-slate-200"
                                 >
@@ -464,6 +636,52 @@ export default function ExamPage() {
                         )}
                     </CardContent>
                 </Card>
+
+                {/* FIX E1: Retake reason modal — student writes a custom reason */}
+                {showRetakeDialog && user && (
+                    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                        <div className="bg-white rounded-2xl p-6 max-w-md w-full">
+                            <h3 className="text-lg font-bold mb-3">Дахин шалгалтын хүсэлт</h3>
+                            <textarea
+                                value={retakeReason}
+                                onChange={e => setRetakeReason(e.target.value)}
+                                placeholder="Шалтгаанаа дэлгэрэнгүй бичнэ үү..."
+                                className="w-full p-3 border rounded min-h-[100px]"
+                                maxLength={500}
+                            />
+                            <div className="text-xs text-slate-500 mt-1">{retakeReason.length}/500</div>
+                            <div className="flex gap-2 mt-4">
+                                <button onClick={() => setShowRetakeDialog(false)} className="flex-1 p-2 border rounded">Болих</button>
+                                <button
+                                    onClick={async () => {
+                                        if (retakeReason.trim().length < 10) {
+                                            toast.error("Шалтгаан 10-аас доошгүй тэмдэгт байх ёстой");
+                                            return;
+                                        }
+                                        try {
+                                            await RetakeService.requestRetake({
+                                                studentId: user.uid,
+                                                examId,
+                                                reason: retakeReason.trim(),
+                                                studentName: profile ? `${profile.lastName} ${profile.firstName}` : user.email || user.uid,
+                                                examTitle: meta?.title || "Шалгалт",
+                                            });
+                                            setShowRetakeDialog(false);
+                                            setRetakeRequested(true);
+                                            toast.success("Хүсэлт илгээгдлээ");
+                                        } catch (e: unknown) {
+                                            const msg = e instanceof Error ? e.message : "Харамсалтай нь хүсэлт илгээхэд алдаа гарлаа.";
+                                            toast.error(msg);
+                                        }
+                                    }}
+                                    className="flex-1 p-2 bg-blue-600 text-white rounded"
+                                >
+                                    Илгээх
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
         );
     }
@@ -535,7 +753,7 @@ export default function ExamPage() {
                         <p className="text-blue-100 mt-1">{meta.grade}-р анги</p>
                     </CardHeader>
                     <CardContent className="p-8 space-y-6">
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className={`grid ${meta.passingScore && meta.passingScore > 0 ? "grid-cols-3" : "grid-cols-2"} gap-4`}>
                             <div className="bg-slate-50 rounded-2xl p-4 text-center">
                                 <Clock className="w-6 h-6 text-blue-600 mx-auto mb-2" />
                                 <div className="text-2xl font-black text-slate-800">{meta.duration}</div>
@@ -546,6 +764,13 @@ export default function ExamPage() {
                                 <div className="text-2xl font-black text-slate-800">{questions.length}</div>
                                 <div className="text-xs text-slate-500 font-bold uppercase tracking-wider">Асуулт</div>
                             </div>
+                            {meta.passingScore && meta.passingScore > 0 && (
+                                <div className="bg-slate-50 rounded-2xl p-4 text-center">
+                                    <CheckCircle className="w-6 h-6 text-purple-600 mx-auto mb-2" />
+                                    <div className="text-2xl font-black text-slate-800">{meta.passingScore}%</div>
+                                    <div className="text-xs text-slate-500 font-bold uppercase tracking-wider">Тэнцэх босго</div>
+                                </div>
+                            )}
                         </div>
 
                         <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-2">
@@ -553,16 +778,34 @@ export default function ExamPage() {
                                 <AlertTriangle className="w-4 h-4" /> Анхааруулга
                             </p>
                             <ul className="text-sm text-amber-700 space-y-1 list-disc list-inside">
-                                <li>Шалгалтын үед өөр цонх нээвэл бүртгэгдэнэ ({MAX_VIOLATIONS} удаа бол автоматаар дуусна)</li>
-                                <li>Хуулах (Ctrl+C/V) хориглоно</li>
-                                <li>Хугацаа дуусахад автоматаар илгээгдэнэ</li>
-                                <li>30 секунд тутамд хариулт автоматаар хадгалагдана</li>
+                                <li>Шалгалт эхэлсэний дараа <strong>{MAX_VIOLATIONS} удаа</strong> өөр цонх/таб нээвэл автоматаар дуусаж илгээгдэнэ</li>
+                                <li>Шалгалтын үед хуулах (Ctrl+C / Ctrl+V), хэвлэх (Ctrl+P) хориглоно</li>
+                                <li>Хөгжүүлэгчийн хэрэгсэл (F12, Ctrl+Shift+I/J/C, Ctrl+U) нээх хориглоно</li>
+                                <li>Хулганы баруун товч (right-click) ажиллахгүй</li>
+                                <li>Хугацаа дуусахад хариулт автоматаар илгээгдэнэ</li>
+                                <li>Хариултууд <strong>60 секунд</strong> тутамд автоматаар хадгалагдана (мөн орхих үед)</li>
+                                <li>Сүлжээ тасарвал систем <strong>3 удаа</strong> дахин илгээх оролдлого хийнэ</li>
+                                <li>Илгээсний дараа хариултаа засах боломжгүй</li>
+                                <li>Шалгалтын цаг сервертэй синхрончлогдож байгаа тул компьютерийн цаг өөрчилснөөр хугацаа уртасахгүй</li>
+                                <li>Шударга байдлын зөрчил гарвал шалгалтын дүн хүчингүй болж болзошгүй</li>
                             </ul>
+                            <label className="flex items-start gap-2 mt-3 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={acknowledgedRules}
+                                    onChange={e => setAcknowledgedRules(e.target.checked)}
+                                    className="mt-1"
+                                />
+                                <span className="text-sm text-amber-800 font-medium">
+                                    Дээрх дүрмийг уншиж танилцсан, хүлээн зөвшөөрч байна
+                                </span>
+                            </label>
                         </div>
 
                         <Button
                             onClick={handleStart}
-                            className="w-full h-14 bg-linear-to-r from-blue-600 to-indigo-600 text-white font-black text-lg rounded-2xl shadow-xl"
+                            disabled={!acknowledgedRules}
+                            className={`w-full h-14 bg-linear-to-r from-blue-600 to-indigo-600 text-white font-black text-lg rounded-2xl shadow-xl ${!acknowledgedRules ? "opacity-50 cursor-not-allowed" : ""}`}
                         >
                             Шалгалт эхлэх
                         </Button>
@@ -579,7 +822,7 @@ export default function ExamPage() {
         <div className="min-h-screen bg-gray-50 select-none" onCopy={e => e.preventDefault()} onPaste={e => e.preventDefault()}>
             {/* Violation warning banner */}
             {showViolationWarning && (
-                <div className="fixed top-0 inset-x-0 z-50 bg-red-600 text-white text-center py-3 font-bold animate-bounce">
+                <div role="alert" className="fixed top-0 inset-x-0 z-50 bg-red-600 text-white text-center py-3 font-bold animate-bounce">
                     ⚠️ Цонх солих оролдлого бүртгэгдлээ! ({violations}/{MAX_VIOLATIONS})
                 </div>
             )}
@@ -594,7 +837,12 @@ export default function ExamPage() {
                         </p>
                     </div>
 
-                    <div className={`font-mono font-black text-xl px-4 py-2 rounded-xl border-2 ${timeLeft < 300 ? "bg-red-50 border-red-300 text-red-600 animate-pulse" : "bg-blue-50 border-blue-200 text-blue-700"}`}>
+                    <div
+                        role="timer"
+                        aria-live="polite"
+                        aria-label="Шалгалтын үлдсэн хугацаа"
+                        className={`font-mono font-black text-xl px-4 py-2 rounded-xl border-2 ${timeLeft < 300 ? "bg-red-50 border-red-300 text-red-600 animate-pulse" : "bg-blue-50 border-blue-200 text-blue-700"}`}
+                    >
                         <Clock className="w-4 h-4 inline mr-1 -mt-0.5" />
                         {formatTime(timeLeft)}
                     </div>
@@ -637,6 +885,8 @@ export default function ExamPage() {
                                     <button
                                         key={q.id}
                                         onClick={() => setCurrentIdx(i)}
+                                        aria-current={i === currentIdx ? "page" : undefined}
+                                        aria-label={`Асуулт ${i + 1}${answers[q.id]?.trim() ? ', хариулсан' : ''}`}
                                         className={`w-full aspect-square rounded-lg text-xs font-black transition-all ${
                                             i === currentIdx
                                                 ? "bg-blue-600 text-white shadow-lg scale-110"
@@ -687,26 +937,40 @@ export default function ExamPage() {
                                         <div className="rounded-2xl overflow-hidden border border-slate-100">
                                             {currentQ.mediaType === "image" && (
                                                 // eslint-disable-next-line @next/next/no-img-element
-                                                <img src={currentQ.mediaUrl} loading="lazy" alt="Асуултын зураг" className="max-w-full h-auto max-h-64 object-contain mx-auto" />
+                                                <img src={currentQ.mediaUrl} loading="lazy" alt="Асуултын зураг" className="max-w-full h-auto max-h-96 object-contain mx-auto" />
                                             )}
                                             {currentQ.mediaType === "audio" && (
                                                 <audio controls src={currentQ.mediaUrl} className="w-full p-4" />
                                             )}
                                             {currentQ.mediaType === "video" && (
-                                                <video controls src={currentQ.mediaUrl} className="w-full max-h-64" />
+                                                <video controls src={currentQ.mediaUrl} className="w-full max-h-96" />
                                             )}
+                                        </div>
+                                    )}
+
+                                    {/* Нэмэлт зургууд (extraImageUrls) */}
+                                    {currentQ.extraImageUrls && currentQ.extraImageUrls.length > 0 && (
+                                        <div className="space-y-2">
+                                            {currentQ.extraImageUrls.map((url, i) => (
+                                                // eslint-disable-next-line @next/next/no-img-element
+                                                <div key={i} className="rounded-2xl overflow-hidden border border-slate-100">
+                                                    <img src={url} loading="lazy" alt={`Нэмэлт зураг ${i + 2}`} className="max-w-full h-auto max-h-96 object-contain mx-auto" />
+                                                </div>
+                                            ))}
                                         </div>
                                     )}
 
                                     {/* Multiple choice options */}
                                     {currentQ.type === "multiple_choice" && currentQ.options && (
                                         <div className="space-y-3">
-                                            {currentQ.options.map((opt, idx) => {
+                                            {getShuffledOptions(currentQ).map((shuffled, idx) => {
                                                 const letter = String.fromCharCode(65 + idx); // A, B, C, D
-                                                const isSelected = answers[currentQ.id] === opt;
+                                                // A2: store the option TEXT as the answer so grading still matches.
+                                                const isSelected = answers[currentQ.id] === shuffled.text;
                                                 return (
                                                     <label
-                                                        key={idx}
+                                                        key={shuffled.originalIdx}
+                                                        aria-label={`Сонголт ${letter}: ${shuffled.text}`}
                                                         className={`flex items-start gap-4 p-4 rounded-2xl border-2 cursor-pointer transition-all ${
                                                             isSelected
                                                                 ? "border-blue-500 bg-blue-50 shadow-md"
@@ -716,9 +980,9 @@ export default function ExamPage() {
                                                         <input
                                                             type="radio"
                                                             name={currentQ.id}
-                                                            value={opt}
+                                                            value={shuffled.text}
                                                             checked={isSelected}
-                                                            onChange={() => setAnswers(prev => ({ ...prev, [currentQ.id]: opt }))}
+                                                            onChange={() => setAnswers(prev => ({ ...prev, [currentQ.id]: shuffled.text }))}
                                                             className="sr-only"
                                                         />
                                                         <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-black text-sm shrink-0 transition-all ${
@@ -727,10 +991,10 @@ export default function ExamPage() {
                                                             {letter}
                                                         </div>
                                                         <div className="flex-1 pt-1 font-medium text-slate-700">
-                                                            <MathRenderer content={opt} />
-                                                            {currentQ.optionImages?.[idx] && (
+                                                            <MathRenderer content={shuffled.text} />
+                                                            {shuffled.image && (
                                                                 // eslint-disable-next-line @next/next/no-img-element
-                                                                <img src={currentQ.optionImages[idx]} loading="lazy" alt={`Option ${letter}`} className="mt-2 max-h-24 object-contain" />
+                                                                <img src={shuffled.image} loading="lazy" alt={`Option ${letter}`} className="mt-2 max-h-24 object-contain" />
                                                             )}
                                                         </div>
                                                     </label>
@@ -755,6 +1019,19 @@ export default function ExamPage() {
                                                 onChange={e => setAnswers(prev => ({ ...prev, [currentQ.id]: e.target.value }))}
                                             />
                                         </div>
+                                    )}
+
+                                    {/* FIX E3 / FIX 16: Per-question report button — opens a proper modal instead of window.prompt */}
+                                    {user && (
+                                        <button
+                                            onClick={() => {
+                                                setReportingQuestionId(currentQ.id);
+                                                setReportReason("");
+                                            }}
+                                            className="text-xs text-slate-500 hover:text-red-600 mt-2 underline"
+                                        >
+                                            ⚑ Энэ асуултанд асуудал илгээх
+                                        </button>
                                     )}
 
                                     {/* Navigation */}
@@ -802,11 +1079,65 @@ export default function ExamPage() {
             
             {/* Live Chat Support */}
             {user && profile && (
-                <ExamSupportChat 
-                    examId={examId} 
-                    studentId={user.uid} 
-                    studentName={`${profile.lastName || ""} ${profile.firstName || ""}`.trim()} 
+                <ExamSupportChat
+                    examId={examId}
+                    studentId={user.uid}
+                    studentName={`${profile.lastName || ""} ${profile.firstName || ""}`.trim()}
                 />
+            )}
+
+            {/* FIX 16: Question report modal — replaces window.prompt */}
+            {reportingQuestionId && user && (
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl p-6 max-w-md w-full">
+                        <h3 className="text-lg font-bold mb-3">Асуултын талаар санал илгээх</h3>
+                        <textarea
+                            value={reportReason}
+                            onChange={e => setReportReason(e.target.value.slice(0, 300))}
+                            placeholder="Юу буруу/тодорхойгүй байгааг бичнэ үү (10-300 тэмдэгт)..."
+                            className="w-full p-3 border rounded min-h-[100px]"
+                            maxLength={300}
+                        />
+                        <div className="text-xs text-slate-500 mt-1">{reportReason.length}/300</div>
+                        <div className="flex gap-2 mt-4">
+                            <button
+                                onClick={() => setReportingQuestionId(null)}
+                                disabled={reportSubmitting}
+                                className="flex-1 p-2 border rounded"
+                            >
+                                Болих
+                            </button>
+                            <button
+                                disabled={reportSubmitting}
+                                onClick={async () => {
+                                    if (reportReason.trim().length < 10) {
+                                        toast.error("10-аас доошгүй тэмдэгт");
+                                        return;
+                                    }
+                                    setReportSubmitting(true);
+                                    try {
+                                        await addDoc(collection(db, "question_reports"), {
+                                            questionId: reportingQuestionId,
+                                            examId,
+                                            studentId: user.uid,
+                                            reason: reportReason.trim().slice(0, 300),
+                                            createdAt: serverTimestamp(),
+                                        });
+                                        toast.success("Илгээгдлээ");
+                                        setReportingQuestionId(null);
+                                    } catch (err) {
+                                        toast.error(err instanceof Error ? err.message : "Алдаа");
+                                    } finally {
+                                        setReportSubmitting(false);
+                                    }
+                                }}
+                                className="flex-1 p-2 bg-blue-600 text-white rounded"
+                            >
+                                {reportSubmitting ? "Илгээж байна..." : "Илгээх"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );

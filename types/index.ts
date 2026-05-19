@@ -20,7 +20,12 @@ export interface UserProfile {
     // Student identity
     nationalId?: string;     // РД (Регистрийн дугаар)
     parentId?: string;       // UID of the parent who registered this student
-    tempPassword?: string;   // plain-text temp password shown to parent
+    // NOTE: tempPassword is ONLY returned in API responses for the initial credential display.
+    // It is NEVER stored in Firestore. Do not write this field to the users collection.
+    tempPassword?: string;
+    /** When true, the user is forced to change their password on next login.
+     *  Cleared after a successful password change. */
+    mustChangePassword?: boolean;
     status?: "active" | "archived";
 }
 
@@ -39,6 +44,11 @@ export interface Exam {
     subjectDistribution?: { subjectId: string; count: number }[];
     questionsAssigned?: boolean;
     passingScore?: number; // Суурь оноо (босго)
+    /** Maximum number of attempts a student can make (original + approved retakes).
+     *  Undefined = unlimited. Enforced in RetakeService.approveRequest. */
+    maxAttempts?: number;
+    /** 'live' = graded & persisted, 'practice' = self-study (no submission/result is stored). */
+    examMode?: 'live' | 'practice';
 }
 
 export type QuestionType = 'multiple_choice' | 'fill_in_blank' | 'input'; // 'input' kept for backwards compat
@@ -70,6 +80,7 @@ export interface Question {
     correctAnswer: string;
     mediaUrl?: string;
     mediaType?: 'image' | 'audio' | 'video';
+    extraImageUrls?: string[]; // Нэмэлт зургуудын URL-ууд (mediaUrl-аас гадна)
     points: number; // default 1
     subject?: string;
     lessonId?: string;
@@ -82,6 +93,10 @@ export interface Question {
     updatedAt?: string;
     status?: 'active' | 'correction_needed' | 'archived';
     correctionNote?: string;
+    // FIX 44: Difficulty auto-calibration. Updated by onSubmissionFinalized Cloud Function.
+    attemptCount?: number;
+    correctCount?: number;
+    lastAttemptedAt?: import("firebase/firestore").Timestamp | Date | string;
 }
 
 // Question served to students during exam (no answers/solutions)
@@ -93,6 +108,7 @@ export interface ExamQuestion {
     optionImages?: string[];
     mediaUrl?: string;
     mediaType?: 'image' | 'audio' | 'video';
+    extraImageUrls?: string[]; // Нэмэлт зургууд
     points: number;
     subject?: string;
 }

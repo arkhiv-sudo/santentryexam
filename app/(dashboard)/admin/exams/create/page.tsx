@@ -11,10 +11,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { toast } from "sonner";
-import { ArrowLeft, Save, Calendar, Clock, GraduationCap, ListOrdered, ChevronRight, ChevronLeft, BookOpen } from "lucide-react";
+import { ArrowLeft, Save, Calendar, Clock, GraduationCap, ListOrdered, ChevronRight, ChevronLeft, BookOpen, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { Exam, Subject } from "@/types";
 import { useQuery } from "@tanstack/react-query";
+import { db } from "@/lib/firebase";
+import { doc, onSnapshot } from "firebase/firestore";
 
 const GRADES_MAP: Record<string, string> = {
     "1": "1-р анги", "2": "2-р анги", "3": "3-р анги", "4": "4-р анги",
@@ -29,6 +31,9 @@ export default function CreateExamPage() {
     const [saving, setSaving] = useState(false);
     const [step, setStep] = useState(1);
     const [subjects, setSubjects] = useState<Subject[]>([]);
+    // FIX 11: Show a spinner while waiting for the question assignment Cloud Function
+    // to mark questionsAssigned=true on the exam document after publish.
+    const [waitingForQuestions, setWaitingForQuestions] = useState(false);
     const [loadingSubjects, setLoadingSubjects] = useState(false);
 
     const { data: lessonsData = [] } = useQuery({
@@ -46,7 +51,10 @@ export default function CreateExamPage() {
         grade: "",
         maxQuestions: "30",
         passingScore: "60",
-        status: "draft" as Exam["status"]
+        maxAttempts: "", // FIX F1: empty = unlimited
+        status: "draft" as Exam["status"],
+        // FIX 43: practice mode flag — 'practice' means submissions/results are NOT persisted.
+        examMode: "live" as NonNullable<Exam["examMode"]>,
     });
 
     const [distribution, setDistribution] = useState<Record<string, number>>({});
@@ -82,12 +90,13 @@ export default function CreateExamPage() {
             const counts = await QuestionService.getQuestionCounts(formData.grade, subjectIds);
             setAvailableCounts(counts);
 
-            // Initialize distribution with 0s if not already set
-            const newDist: Record<string, number> = { ...distribution };
-            data.forEach(s => {
-                if (newDist[s.id] === undefined) newDist[s.id] = 0;
+            // FIX 21: Reset distribution to only include subjects for this grade so
+            // IDs from a previously selected grade don't leak into the new distribution.
+            const freshDist: Record<string, number> = {};
+            data.forEach((s: Subject) => {
+                freshDist[s.id] = distribution[s.id] ?? 0;
             });
-            setDistribution(newDist);
+            setDistribution(freshDist);
 
             setStep(2);
         } catch (error) {
@@ -129,25 +138,75 @@ export default function CreateExamPage() {
             return;
         }
 
+        // FIX F2: For published exams, warn the admin if a subject pool is at or below
+        // the requested count so they understand fewer questions may be drawn.
+        if (formData.status === "published") {
+            const insufficient: string[] = [];
+            subjects.forEach(s => {
+                const requested = distribution[s.id] || 0;
+                if (requested <= 0) return;
+                const available = availableCounts[s.id] || 0;
+                if (available < requested) {
+                    insufficient.push(`${s.name}: ${requested} хүссэн, ${available} байгаа`);
+                }
+            });
+            if (insufficient.length > 0) {
+                const proceed = window.confirm(
+                    `Дараах сэдвүүдэд асуулт хүрэлцэхгүй байна:\n\n${insufficient.join("\n")}\n\nҮргэлжлүүлэх үү?`
+                );
+                if (!proceed) return;
+            }
+        }
+
         setSaving(true);
         try {
             const subjectDistribution = Object.entries(distribution)
                 .filter(([, count]) => count > 0)
                 .map(([subjectId, count]) => ({ subjectId, count }));
 
-            await ExamService.createExam({
+            const newExamId = await ExamService.createExam({
                 title: formData.title,
                 scheduledAt: new Date(formData.scheduledAt),
                 registrationEndDate: new Date(formData.registrationEndDate),
                 duration: parseInt(formData.duration),
                 grade: formData.grade,
                 maxQuestions: parseInt(formData.maxQuestions),
-                passingScore: parseInt(formData.passingScore) || undefined,
+                passingScore: parseInt(formData.passingScore) || 0,
+                ...(formData.maxAttempts ? { maxAttempts: parseInt(formData.maxAttempts) } : {}),
+                examMode: formData.examMode,
                 status: formData.status,
                 createdBy: user.uid,
                 questionIds: [],
                 subjectDistribution
             });
+
+            // FIX 11: If the exam was published, wait for the Cloud Function to assign
+            // questions (questionsAssigned=true on the exam doc) before redirecting.
+            // Show a spinner, and fall back to a redirect after 30 seconds.
+            if (formData.status === 'published') {
+                setSaving(false);
+                setWaitingForQuestions(true);
+                toast.success("Шалгалт үүсгэгдлээ. Асуулт оноож байна...");
+
+                const unsub = onSnapshot(doc(db, "exams", newExamId), (snap) => {
+                    if (snap.data()?.questionsAssigned) {
+                        unsub();
+                        setWaitingForQuestions(false);
+                        toast.success("Асуулт амжилттай оноогдлоо!");
+                        router.push('/admin/exams');
+                    }
+                });
+
+                // Timeout fallback: redirect after 30 seconds regardless
+                setTimeout(() => {
+                    unsub();
+                    setWaitingForQuestions(false);
+                    toast.warning("Асуулт автоматаар оноогдсонгүй. Засах хуудаснаас шалгана уу.");
+                    router.push('/admin/exams');
+                }, 30000);
+                return; // skip finally setSaving(false) — already handled above
+            }
+
             toast.success("Шалгалт амжилттай үүсгэгдээ");
             router.push("/admin/exams");
         } catch (error) {
@@ -159,6 +218,19 @@ export default function CreateExamPage() {
     };
 
     if (authLoading) return <div className="p-8 text-center text-slate-500">Уншиж байна...</div>;
+
+    // FIX 11: Show full-page spinner while waiting for question assignment
+    if (waitingForQuestions) {
+        return (
+            <div className="flex flex-col items-center justify-center min-h-[60vh] gap-6">
+                <Loader2 className="w-12 h-12 text-blue-600 animate-spin" />
+                <div className="text-center">
+                    <h2 className="text-xl font-bold text-slate-800">Асуулт оноож байна...</h2>
+                    <p className="text-slate-500 mt-1 text-sm">Дуусахад автоматаар шилжинэ. Хүлээнэ үү (30 секунд).</p>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="max-w-4xl mx-auto space-y-6">
@@ -283,6 +355,35 @@ export default function CreateExamPage() {
                                         <option value="archived">Архивлах (Archived)</option>
                                     </Select>
                                 </div>
+                            </div>
+
+                            {/* FIX F1: Optional limit on retake attempts */}
+                            <div className="grid md:grid-cols-2 gap-6">
+                                <div className="space-y-2">
+                                    <label className="text-sm font-semibold text-slate-700">Дээд тоо (хязгааргүй бол хоосон үлдээ)</label>
+                                    <Input
+                                        type="number"
+                                        min="1"
+                                        placeholder="Жнь: 2"
+                                        value={formData.maxAttempts}
+                                        onChange={(e) => setFormData({ ...formData, maxAttempts: e.target.value })}
+                                    />
+                                    <p className="text-xs text-slate-500">Анхны өгөлт + зөвшөөрөгдсөн дахин өгөлтийн нийт тоо.</p>
+                                </div>
+                            </div>
+
+                            {/* FIX 43: Practice mode — graded answers are shown to the student but no submission/result is stored. */}
+                            <div className="space-y-2">
+                                <label className="flex items-center gap-2 text-sm font-semibold text-slate-700 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={formData.examMode === 'practice'}
+                                        onChange={(e) => setFormData({ ...formData, examMode: e.target.checked ? 'practice' : 'live' })}
+                                        className="w-4 h-4 rounded border-slate-300"
+                                    />
+                                    Дасгал төрөл (Дүн хадгалахгүй)
+                                </label>
+                                <p className="text-xs text-slate-500">Сурагч дүнгээ харна, гэхдээ submission/result бүртгэгдэхгүй.</p>
                             </div>
                         </CardContent>
                     </Card>

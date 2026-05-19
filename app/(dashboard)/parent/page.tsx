@@ -7,7 +7,7 @@ import {
     Trophy, Bell, BellOff, Users, GraduationCap, Calendar,
     CheckCircle, Clock, AlertCircle, Loader2, Eye
 } from "lucide-react";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
     collection, query, where, getDocs, doc, getDoc,
     updateDoc, orderBy, onSnapshot
@@ -16,10 +16,12 @@ import { db } from "@/lib/firebase";
 import { UserProfile, ExamResult, Notification, Exam } from "@/types";
 import { Announcement } from "@/lib/services/announcement-service";
 import { ExamService } from "@/lib/services/exam-service";
+import { toDate } from "@/lib/utils";
 import { toast } from "sonner";
 import Link from "next/link";
 import { UserPlus, Key, Megaphone, X } from "lucide-react";
 import Image from "next/image";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 export default function ParentDashboard() {
     const { profile } = useAuth();
@@ -36,6 +38,10 @@ export default function ParentDashboard() {
     const [registerModalOpen, setRegisterModalOpen] = useState<{exam: Exam, children: UserProfile[]} | null>(null);
     const [selectedChildIds, setSelectedChildIds] = useState<string[]>([]);
     const [isRegistering, setIsRegistering] = useState(false);
+
+    // FIX 15: Track notification IDs that already triggered a toast to prevent
+    // duplicate toasts on every onSnapshot fire (including re-renders/reconnects).
+    const shownNotifIds = useRef<Set<string>>(new Set());
 
     // ── Load children profiles ──────────────────────────────────────────────
     const loadChildren = useCallback(async () => {
@@ -209,10 +215,18 @@ export default function ParentDashboard() {
             });
             setNotifications(notifs);
 
-            // Show toast for new unread score notifications
-            const newScoreNotifs = notifs.filter(n => !n.read && n.type === "score_available");
+            // FIX 15: Only toast for genuinely new score notifications we have not
+            // already shown — prevents duplicate toasts on every snapshot update.
+            const newScoreNotifs = notifs.filter(n =>
+                !n.read &&
+                n.type === "score_available" &&
+                !shownNotifIds.current.has(n.id)
+            );
             if (newScoreNotifs.length > 0) {
-                toast.success(`${newScoreNotifs[0].studentName}-ийн шалгалтын дүн гарлаа!`);
+                newScoreNotifs.forEach(n => {
+                    shownNotifIds.current.add(n.id);
+                    toast.success(`${n.studentName}-ийн шалгалтын дүн гарлаа!`);
+                });
             }
         });
 
@@ -439,6 +453,7 @@ export default function ParentDashboard() {
 
                     {/* Results section */}
                     {results.length > 0 && (
+                        <ErrorBoundary label="Шалгалтын дүн ачаалахад алдаа">
                         <div>
                             <h2 className="text-sm flex items-center gap-2 font-bold text-slate-800 uppercase tracking-wider mb-4">
                                 <div className="w-1.5 h-4 bg-emerald-600 rounded-full" />
@@ -486,12 +501,14 @@ export default function ParentDashboard() {
                                 ))}
                             </div>
                         </div>
+                        </ErrorBoundary>
                     )}
                 </div>
 
                 {/* Right: notifications & announcements */}
                 <div>
                     {/* Announcements section */}
+                    <ErrorBoundary label="Мэдэгдэл ачаалахад алдаа">
                     <div className="mb-8">
                         <h2 className="text-sm flex items-center justify-between font-bold text-slate-800 uppercase tracking-wider mb-4">
                             <div className="flex items-center gap-2">
@@ -540,7 +557,9 @@ export default function ParentDashboard() {
                             )}
                         </div>
                     </div>
+                    </ErrorBoundary>
 
+                    <ErrorBoundary label="Хувийн мэдэгдэл ачаалахад алдаа">
                     <h2 className="text-sm flex items-center justify-between font-bold text-slate-800 uppercase tracking-wider mb-4">
                         <div className="flex items-center gap-2">
                             <div className={`w-1.5 h-4 rounded-full ${unreadCount > 0 ? 'bg-amber-500' : 'bg-slate-400'}`} />
@@ -594,6 +613,7 @@ export default function ParentDashboard() {
                             ))
                         )}
                     </div>
+                    </ErrorBoundary>
 
                     {/* Exam schedule for children */}
                     {children.length > 0 && (
@@ -791,7 +811,7 @@ function ExamScheduleForChildren({ childProfiles }: { childProfiles: UserProfile
                     const snap = await getDocs(q);
                     snap.docs.forEach(d => {
                         const data = d.data();
-                        const scheduledAt = data.scheduledAt?.toDate ? data.scheduledAt.toDate() : new Date(data.scheduledAt);
+                        const scheduledAt = toDate(data.scheduledAt);
                         if (scheduledAt > new Date()) {
                             results.push({
                                 examId: d.id,
@@ -819,8 +839,9 @@ function ExamScheduleForChildren({ childProfiles }: { childProfiles: UserProfile
 
     return (
         <div className="space-y-3">
-            {upcomingExams.map((exam, i) => (
-                <div key={i} className="flex items-start gap-3 p-4 bg-white rounded-2xl border border-slate-100 shadow-sm">
+            {upcomingExams.map((exam) => (
+                // FIX 26: Use stable examId+childName key instead of array index
+                <div key={`${exam.examId}-${exam.childName}`} className="flex items-start gap-3 p-4 bg-white rounded-2xl border border-slate-100 shadow-sm">
                     <div className="p-2 bg-violet-50 rounded-xl border border-violet-100">
                         <Calendar className="w-4 h-4 text-violet-600" />
                     </div>

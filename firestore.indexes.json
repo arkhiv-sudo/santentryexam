@@ -607,6 +607,80 @@
                     "order": "DESCENDING"
                 }
             ]
+        },
+        {
+            "collectionGroup": "admin_audit",
+            "queryScope": "COLLECTION",
+            "fields": [
+                { "fieldPath": "action", "order": "ASCENDING" },
+                { "fieldPath": "createdAt", "order": "DESCENDING" }
+            ]
+        },
+        {
+            "collectionGroup": "admin_audit",
+            "queryScope": "COLLECTION",
+            "fields": [
+                { "fieldPath": "actorUid", "order": "ASCENDING" },
+                { "fieldPath": "createdAt", "order": "DESCENDING" }
+            ]
+        },
+        {
+            "collectionGroup": "questions",
+            "queryScope": "COLLECTION",
+            "fields": [
+                { "fieldPath": "createdBy", "order": "ASCENDING" },
+                { "fieldPath": "attemptCount", "order": "DESCENDING" }
+            ]
+        },
+        {
+            "collectionGroup": "retake_requests",
+            "queryScope": "COLLECTION",
+            "fields": [
+                { "fieldPath": "studentId", "order": "ASCENDING" },
+                { "fieldPath": "examId", "order": "ASCENDING" },
+                { "fieldPath": "status", "order": "ASCENDING" }
+            ]
+        },
+        {
+            "collectionGroup": "retake_requests",
+            "queryScope": "COLLECTION",
+            "fields": [
+                { "fieldPath": "examId", "order": "ASCENDING" },
+                { "fieldPath": "status", "order": "ASCENDING" }
+            ]
+        },
+        {
+            "collectionGroup": "notifications",
+            "queryScope": "COLLECTION",
+            "fields": [
+                { "fieldPath": "recipientId", "order": "ASCENDING" },
+                { "fieldPath": "read", "order": "ASCENDING" },
+                { "fieldPath": "createdAt", "order": "DESCENDING" }
+            ]
+        },
+        {
+            "collectionGroup": "question_reports",
+            "queryScope": "COLLECTION",
+            "fields": [
+                { "fieldPath": "examId", "order": "ASCENDING" },
+                { "fieldPath": "createdAt", "order": "DESCENDING" }
+            ]
+        },
+        {
+            "collectionGroup": "question_reports",
+            "queryScope": "COLLECTION",
+            "fields": [
+                { "fieldPath": "questionId", "order": "ASCENDING" },
+                { "fieldPath": "createdAt", "order": "DESCENDING" }
+            ]
+        },
+        {
+            "collectionGroup": "system_logs",
+            "queryScope": "COLLECTION",
+            "fields": [
+                { "fieldPath": "level", "order": "ASCENDING" },
+                { "fieldPath": "createdAt", "order": "DESCENDING" }
+            ]
         }
     ],
     "fieldOverrides": []

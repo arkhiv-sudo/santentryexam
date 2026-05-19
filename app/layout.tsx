@@ -37,7 +37,15 @@ export default function RootLayout({
           <AuthProvider>
             <ModalProvider>
               {children}
-              <Toaster position="top-right" richColors closeButton />
+              <Toaster
+                position="top-right"
+                richColors
+                closeButton
+                toastOptions={{
+                  duration: 4000,
+                  error: { duration: 7000 },
+                }}
+              />
               <ScrollToTop />
             </ModalProvider>
           </AuthProvider>

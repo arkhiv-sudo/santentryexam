@@ -74,10 +74,35 @@ export async function GET(
         return NextResponse.json({ error: "Та энэ шалгалтыг аль хэдийн өгсөн байна" }, { status: 403 });
     }
 
-    // 5b. Late entry check: block if > 10 min have passed and student hasn't started yet
-    const LATE_ENTRY_LIMIT_MS = 10 * 60 * 1000; // 10 minutes
-    if (reg.status !== "started" && now > scheduledAt + LATE_ENTRY_LIMIT_MS) {
-        return NextResponse.json({ error: "Шалгалт эхэлснээс хойш 10 минут өнгөрсөн тул орох боломжгүй боллоо" }, { status: 403 });
+    // FIX 27: Block the questions fetch entirely once the student has crossed the
+    // violation threshold. The submit route already rejects in this case, but we
+    // also want to stop them re-loading the questions list.
+    const MAX_VIOLATIONS = 3;
+    if ((reg.violations || 0) >= MAX_VIOLATIONS) {
+        return NextResponse.json({
+            error: 'Дүрэм зөрчсөний улмаас шалгалт хаагдсан байна',
+            violationLockout: true,
+        }, { status: 403 });
+    }
+
+    // FIX 9: Double-check via submissions collection to handle TOCTOU race conditions.
+    // The registration status may not yet be "completed" if the student is mid-submit,
+    // but a submission document already exists — block them in that case too.
+    const subSnap = await adminDb.collection("submissions")
+        .where("studentId", "==", uid)
+        .where("examId", "==", examId)
+        .limit(1)
+        .get();
+    if (!subSnap.empty) {
+        return NextResponse.json({ error: "Шалгалтыг аль хэдийн өгсөн байна" }, { status: 403 });
+    }
+
+    // FIX 25: Late entry window is min(10 minutes, 20% of duration) so very short
+    // exams don't grant a window longer than the exam itself.
+    const lateEntryWindowMs = Math.min(10 * 60 * 1000, (exam.duration || 60) * 60 * 1000 * 0.2);
+    const entryDeadline = scheduledAt + lateEntryWindowMs;
+    if (reg.status !== "started" && now > entryDeadline) {
+        return NextResponse.json({ error: `Шалгалт эхэлсэнээс хойш ${Math.floor(lateEntryWindowMs / 60000)} минут өнгөрсөн тул орох боломжгүй` }, { status: 403 });
     }
 
     // 6. Fetch questions (from embedded snapshot or fallback to Firestore)
@@ -88,9 +113,11 @@ export async function GET(
 
     let questions = [];
     
-    // ✅ OPTIMIZATION: Use embedded embedded snapshot (0 extra reads per student)
+    // ✅ OPTIMIZATION: Use embedded snapshot (0 extra reads per student).
+    // FIX 9 / FIX 19: Strip correctAnswer, solution, and solutionMediaUrl from snapshot
+    // before sending to the client so answer data never leaks to the browser.
     if (exam.questionSnapshot && exam.questionSnapshot.length > 0) {
-        questions = exam.questionSnapshot;
+        questions = exam.questionSnapshot.map(({ correctAnswer, solution, solutionMediaUrl, ...safe }: { correctAnswer?: unknown; solution?: unknown; solutionMediaUrl?: unknown; [key: string]: unknown }) => safe);
     } else {
         // Legacy fallback: fetch dynamically using single batched RPC
         const docRefs = questionIds.map(id => adminDb.collection("questions").doc(id));
@@ -109,6 +136,7 @@ export async function GET(
                     optionImages: data.optionImages ?? null,
                     mediaUrl: data.mediaUrl ?? null,
                     mediaType: data.mediaType ?? null,
+                    extraImageUrls: data.extraImageUrls ?? null,
                     points: data.points ?? 1,
                     subject: data.subject ?? null,
                 };
@@ -121,6 +149,7 @@ export async function GET(
         duration: exam.duration,
         grade: exam.grade,
         scheduledAt: exam.scheduledAt?.toMillis?.() ?? scheduledAt,
+        passingScore: exam.passingScore ?? 0,
         questions,
         registrationId: regQuery.docs[0].id,
         registrationStatus: reg.status,

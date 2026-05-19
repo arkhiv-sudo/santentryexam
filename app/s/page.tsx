@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { auth, db } from "@/lib/firebase";
 import { signInWithCustomToken } from "firebase/auth";
-import { collection, query, where, getDocs, doc, setDoc } from "firebase/firestore";
+import { doc, setDoc } from "firebase/firestore";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -12,6 +12,7 @@ import { GraduationCap, ArrowRight, BookOpen, Clock, Loader2 } from "lucide-reac
 import { toast } from "sonner";
 import { ExamService } from "@/lib/services/exam-service";
 import { Exam } from "@/types";
+import { toDate } from "@/lib/utils";
 
 export default function StudentNoLoginPortal() {
     const router = useRouter();
@@ -63,13 +64,18 @@ export default function StudentNoLoginPortal() {
                 console.warn("Session cookie fetch error", e);
             }
 
-            // 3. Create or update user Document (Safe because rules allow self-update and anonymous has uid)
+            // 3. Always create a new user document for this anonymous session.
+            // NOTE: Deduplication by name/grade was intentionally removed.
+            // We cannot re-authenticate as a previously-created Firebase UID from a new
+            // custom token session — attempting to do so would cause a UID mismatch where
+            // the new session UID is used for all subsequent writes instead of the old UID.
+            // Accepting fresh anonymous identities per session is the correct approach here.
             await setDoc(doc(db, "users", user.uid), {
                 role: "student",
                 firstName: firstName.trim(),
                 lastName: lastName.trim(),
                 class: `${grade}-р анги`,
-                grade: grade, // store grade explicitly
+                grade: grade,
                 school: "Онлайн шалгалт",
                 isAnonymous: true,
                 createdAt: new Date()
@@ -88,8 +94,8 @@ export default function StudentNoLoginPortal() {
                 return {
                     id: doc.id,
                     ...data,
-                    scheduledAt: data.scheduledAt?.toDate ? data.scheduledAt.toDate() : new Date(data.scheduledAt),
-                    registrationEndDate: data.registrationEndDate?.toDate ? data.registrationEndDate.toDate() : new Date(data.registrationEndDate)
+                    scheduledAt: toDate(data.scheduledAt),
+                    registrationEndDate: toDate(data.registrationEndDate)
                 } as Exam;
             });
 
@@ -176,7 +182,7 @@ export default function StudentNoLoginPortal() {
                                         onChange={(e) => setGrade(e.target.value)}
                                         className="flex h-12 w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
                                     >
-                                        {[6, 7, 8, 9, 10, 11, 12].map(g => (
+                                        {Array.from({ length: 12 }, (_, i) => i + 1).map(g => (
                                             <option key={g} value={g.toString()}>{g}-р анги</option>
                                         ))}
                                     </select>

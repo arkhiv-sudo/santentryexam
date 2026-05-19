@@ -6,6 +6,7 @@ import { db, auth } from "@/lib/firebase";
 import { UserProfile, UserRole } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Select } from "@/components/ui/Select";
+import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -71,10 +72,29 @@ export default function AdminUsersPage() {
         try {
             const userRef = doc(db, "users", uid);
             await updateDoc(userRef, { status: "archived" });
+            // B5: Also disable the Firebase Auth user so they cannot obtain a new
+            // ID token even if their session cookie expires (Firestore status alone
+            // is read-only enforcement; Auth disable is the real lockout).
+            try {
+                const res = await fetch("/api/admin/disable-user", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ uid, disabled: true }),
+                });
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    console.warn("Auth disable failed:", data?.error);
+                    toast.warning("Firestore-д архивлагдсан боловч Auth идэвхгүй болгож чадсангүй");
+                }
+            } catch (authErr) {
+                console.warn("disable-user API call failed", authErr);
+                toast.warning("Firestore-д архивлагдсан боловч Auth идэвхгүй болгож чадсангүй");
+            }
             queryClient.invalidateQueries({ queryKey: ["users"] });
             toast.success("Хэрэглэгч архивлагдлаа");
-        } catch {
-            toast.error("Алдаа гарлаа");
+        } catch (err: unknown) {
+            console.error("[handleArchiveUser]", err);
+            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
         }
     };
 
@@ -90,11 +110,15 @@ export default function AdminUsersPage() {
     return (
         <div className="space-y-6">
             {/* Compact Header */}
-            <div className="relative overflow-hidden rounded-xl bg-linear-to-r from-slate-50 to-blue-50/50 px-6 py-5 border border-slate-200 shadow-sm">
+            <div className="relative overflow-hidden rounded-xl bg-linear-to-r from-slate-50 to-blue-50/50 px-6 py-5 border border-slate-200 shadow-sm flex items-center justify-between gap-4">
                 <div>
                     <h1 className="text-xl font-bold tracking-tight text-slate-900">Хэрэглэгчийн удирдлага</h1>
                     <p className="text-slate-500 mt-1 text-sm">Бүх хэрэглэгчдийг харах, засах, эрх өөрчлөх</p>
                 </div>
+                {/* FIX 46: CSV bulk import placeholder. Full implementation requires papaparse. */}
+                <Button variant="outline" onClick={() => toast.info('CSV импорт удахгүй нэмэгдэнэ')}>
+                    CSV-ээс импортлох
+                </Button>
             </div>
 
             <Card className="border-0 shadow-lg">

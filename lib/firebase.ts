@@ -15,6 +15,19 @@ const firebaseConfig = {
 };
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+
+// TODO (FIX 17): Enable Firebase App Check for production
+// 1. Go to Firebase Console → App Check
+// 2. Register reCAPTCHA Enterprise site key
+// 3. Add: import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
+//    if (typeof window !== 'undefined' && process.env.NEXT_PUBLIC_APP_CHECK_SITE_KEY) {
+//      initializeAppCheck(app, {
+//        provider: new ReCaptchaEnterpriseProvider(process.env.NEXT_PUBLIC_APP_CHECK_SITE_KEY!),
+//        isTokenAutoRefreshEnabled: true,
+//      });
+//    }
+// 4. Enforce in Firebase Console
+
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const storage = getStorage(app);

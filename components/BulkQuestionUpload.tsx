@@ -556,6 +556,9 @@ export function BulkQuestionUpload({ allSubjects, allLessons, onComplete }: Bulk
                         <div className="text-center">
                             <p className="font-bold text-slate-800">ZIP файл оруулах</p>
                             <p className="text-xs text-slate-500 mt-1">CSV болон зургуудыг агуулсан байна</p>
+                            <p className="text-xs text-amber-600 mt-1">
+                                ⚠️ Том файл (50MB дээш) browser дотор удаан боловсруулагдана. Зургийг тусдаа байршуулахыг зөвлөж байна.
+                            </p>
                         </div>
                         <input
                             type="file"
