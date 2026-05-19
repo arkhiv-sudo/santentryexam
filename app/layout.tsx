@@ -41,10 +41,7 @@ export default function RootLayout({
                 position="top-right"
                 richColors
                 closeButton
-                toastOptions={{
-                  duration: 4000,
-                  error: { duration: 7000 },
-                }}
+                duration={4000}
               />
               <ScrollToTop />
             </ModalProvider>

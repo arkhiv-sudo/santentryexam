@@ -20,6 +20,8 @@ import { useAuth } from "@/components/AuthProvider";
 import { Subject } from "@/types";
 import { Lesson } from "@/types";
 import MathRenderer from "@/components/exam/MathRenderer";
+import { toDate } from "@/lib/utils";
+import { Clock } from "lucide-react";
 import {
     DocumentData,
     QueryDocumentSnapshot,
@@ -258,13 +260,14 @@ export const validateRow = (
 };
 
 export default function QuestionsPage() {
-    const { user } = useAuth();
+    const { user, profile } = useAuth();
     const queryClient = useQueryClient();
     const confirm = useConfirm();
     const [activeTab, setActiveTab] = useState<"questions" | "corrections">("questions");
     const [searchTerm, setSearchTerm] = useState("");
     const [typeFilter, setTypeFilter] = useState<QuestionType | "all">("all");
     const [gradeFilter, setGradeFilter] = useState<string | "all">("all");
+    const [reviewFilter, setReviewFilter] = useState<"all" | "unreviewed" | "reviewed">("all");
     const [lessonFilter, setLessonFilter] = useState<string | "all">("all");
     const [subjectFilter, setSubjectFilter] = useState<string | "all">("all");
     const [authorFilter, setAuthorFilter] = useState<string | "all">("all");
@@ -453,14 +456,42 @@ export default function QuestionsPage() {
     }, [hasNext, currentPage, paginatedData?.lastVisible, queryClient, typeFilter, gradeFilter, subjectFilter, authorFilter, lessonFilter]);
 
     const displayQuestions = useMemo(() => {
-        const currentQuestions = paginatedData?.questions || [];
+        let currentQuestions = paginatedData?.questions || [];
+
+        // Review status filter
+        if (reviewFilter === "unreviewed") {
+            currentQuestions = currentQuestions.filter(q => q.reviewStatus !== "reviewed");
+        } else if (reviewFilter === "reviewed") {
+            currentQuestions = currentQuestions.filter(q => q.reviewStatus === "reviewed");
+        }
+
         if (!searchTerm) return currentQuestions;
         const lowerTerm = searchTerm.toLowerCase();
         return currentQuestions.filter(q =>
             q.content.toLowerCase().includes(lowerTerm) ||
             (q.subject && subjectsMap[q.subject]?.toLowerCase().includes(lowerTerm))
         );
-    }, [searchTerm, paginatedData?.questions, subjectsMap]);
+    }, [searchTerm, paginatedData?.questions, subjectsMap, reviewFilter]);
+
+    // Admin can flip review status (unreview a question if needed)
+    const handleToggleReview = async (q: Question) => {
+        if (!profile) return;
+        const newStatus = q.reviewStatus === "reviewed" ? "unreviewed" : "reviewed";
+        try {
+            const reviewerName = `${profile.lastName || ""} ${profile.firstName || ""}`.trim();
+            await updateDoc(doc(db, "questions", q.id), {
+                reviewStatus: newStatus,
+                reviewedBy: newStatus === "reviewed" ? profile.uid : null,
+                reviewedByName: newStatus === "reviewed" ? reviewerName : null,
+                reviewedAt: newStatus === "reviewed" ? serverTimestamp() : null,
+            });
+            queryClient.invalidateQueries({ queryKey: ["admin_questions"] });
+            toast.success(newStatus === "reviewed" ? "Хянагдсан болсон" : "Хянагдаагүй болсон");
+        } catch (err: unknown) {
+            console.error("[handleToggleReview]", err);
+            toast.error(err instanceof Error ? err.message : "Алдаа");
+        }
+    };
 
     const isAllSelected = displayQuestions.length > 0 && displayQuestions.every(q => selectedIds.has(q.id));
 
@@ -1065,6 +1096,15 @@ export default function QuestionsPage() {
                                     <option key={a.uid} value={a.uid}>{a.lastName} {a.firstName}</option>
                                 ))}
                             </Select>
+                            <Select
+                                value={reviewFilter}
+                                onChange={(e) => setReviewFilter(e.target.value as "all" | "unreviewed" | "reviewed")}
+                                className="h-9 text-sm min-w-[140px]"
+                            >
+                                <option value="all">Бүх төлөв</option>
+                                <option value="unreviewed">⏳ Хянаагүй</option>
+                                <option value="reviewed">✓ Хянагдсан</option>
+                            </Select>
                         </div>
                     </CardHeader>
                     <CardContent>
@@ -1111,19 +1151,20 @@ export default function QuestionsPage() {
                                             />
                                         </th>
                                         <th className="px-4 py-3">Агуулга</th>
-                                        <th className="px-4 py-3 w-32">Төрөл</th>
+                                        <th className="px-3 py-3 w-36 text-center">Хяналт</th>
+                                        <th className="px-4 py-3 w-28">Төрөл</th>
                                         <th className="px-4 py-3 w-32">Сэдэв</th>
                                         <th className="px-4 py-3 w-24">Анги</th>
                                         <th className="px-4 py-3 w-32 text-left">Багш</th>
-                                        <th className="px-4 py-3 w-32 text-left">Огноо</th>
-                                        <th className="px-4 py-3 w-20 text-center">Оноо</th>
-                                        <th className="px-4 py-3 w-24 text-right">Үйлдэл</th>
+                                        <th className="px-4 py-3 w-28 text-left">Огноо</th>
+                                        <th className="px-4 py-3 w-16 text-center">Оноо</th>
+                                        <th className="px-4 py-3 w-32 text-right">Үйлдэл</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-100">
                                     {loading ? (
                                         <tr>
-                                            <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                                            <td colSpan={9} className="px-4 py-8 text-center text-gray-500">
                                                 <div className="flex flex-col items-center gap-2">
                                                     <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
                                                     Асуултуудыг ачаалж байна...
@@ -1132,7 +1173,7 @@ export default function QuestionsPage() {
                                         </tr>
                                     ) : isError ? (
                                         <tr>
-                                            <td colSpan={8} className="px-4 py-8 text-center text-red-500">
+                                            <td colSpan={9} className="px-4 py-8 text-center text-red-500">
                                                 <p className="font-bold">Алдаа гарлаа</p>
                                                 <p className="text-sm opacity-80">{(error as Error)?.message || "Өгөгдлийг татахад алдаа гарлаа"}</p>
                                                 <button
@@ -1145,7 +1186,7 @@ export default function QuestionsPage() {
                                         </tr>
                                     ) : displayQuestions.length === 0 ? (
                                         <tr>
-                                            <td colSpan={8} className="px-4 py-8 text-center text-gray-500 italic">Асуулт олдсонгүй.</td>
+                                            <td colSpan={9} className="px-4 py-8 text-center text-gray-500 italic">Асуулт олдсонгүй.</td>
                                         </tr>
                                     ) : (
                                         displayQuestions.map((q) => (
@@ -1167,6 +1208,40 @@ export default function QuestionsPage() {
                                                             Медиа: {q.mediaType}
                                                         </span>
                                                     )}
+                                                </td>
+                                                {/* Review status */}
+                                                <td className="px-3 py-3 text-center">
+                                                    <div className="flex flex-col items-center gap-0.5">
+                                                        {q.reviewStatus === 'reviewed' ? (
+                                                            <>
+                                                                <button
+                                                                    onClick={() => handleToggleReview(q)}
+                                                                    className="inline-flex items-center gap-1 text-[10px] font-bold bg-emerald-50 text-emerald-700 px-2 py-1 rounded-full border border-emerald-200 hover:bg-emerald-100 transition-colors"
+                                                                    title="Хянагдаагүй болгох"
+                                                                >
+                                                                    <CheckCircle className="w-3 h-3" /> Хянагдсан
+                                                                </button>
+                                                                {q.reviewedByName && (
+                                                                    <span className="text-[9px] text-slate-500 mt-0.5">
+                                                                        {q.reviewedByName}
+                                                                    </span>
+                                                                )}
+                                                                {q.reviewedAt && (
+                                                                    <span className="text-[9px] text-slate-400">
+                                                                        {toDate(q.reviewedAt).toLocaleDateString("mn-MN")}
+                                                                    </span>
+                                                                )}
+                                                            </>
+                                                        ) : (
+                                                            <button
+                                                                onClick={() => handleToggleReview(q)}
+                                                                className="inline-flex items-center gap-1 text-[10px] font-bold bg-amber-50 text-amber-700 px-2 py-1 rounded-full border border-amber-200 hover:bg-amber-100 transition-colors"
+                                                                title="Хянагдсан гэж тэмдэглэх"
+                                                            >
+                                                                <Clock className="w-3 h-3" /> Хянаагүй
+                                                            </button>
+                                                        )}
+                                                    </div>
                                                 </td>
                                                 <td className="px-4 py-3 text-gray-500">{typeLabels[q.type] || q.type}</td>
                                                 <td className="px-4 py-3 text-gray-500 truncate max-w-[120px]">{(q.subject && subjectsMap[q.subject]) || q.subject || "-"}</td>

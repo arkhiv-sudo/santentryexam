@@ -26,11 +26,19 @@ export default function proxy(request: NextRequest) {
             return NextResponse.redirect(destUrl);
         }
 
-        // 3. Simple RBAC
+        // 3. RBAC — redirect to home if the user's role doesn't match the path.
+        // FIX 8: Guards /admin, /teacher, /student, /parent.
         if (pathname.startsWith('/admin') && role !== 'admin') {
-            const homeUrl = request.nextUrl.clone();
-            homeUrl.pathname = '/';
-            return NextResponse.redirect(homeUrl);
+            return NextResponse.redirect(new URL('/', request.url));
+        }
+        if (pathname.startsWith('/teacher') && role !== 'teacher' && role !== 'admin') {
+            return NextResponse.redirect(new URL('/', request.url));
+        }
+        if (pathname.startsWith('/student') && role !== 'student' && role !== 'admin') {
+            return NextResponse.redirect(new URL('/', request.url));
+        }
+        if (pathname.startsWith('/parent') && role !== 'parent' && role !== 'admin') {
+            return NextResponse.redirect(new URL('/', request.url));
         }
 
         return NextResponse.next();

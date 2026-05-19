@@ -129,10 +129,16 @@ async function assignQuestionsToExam(examId: string, examData: Record<string, un
 
         // A1: Exclude questions that admins have flagged as needing correction.
         // These are not safe to assign to live exams until they're fixed.
+        // REVIEW WORKFLOW: Also exclude unreviewed questions — only 'reviewed' ones
+        // are eligible for inclusion in published exams.
         const available = snapshot.docs
             .filter(d => {
-                const s = d.data().status;
-                return s !== "archived" && s !== "correction_needed";
+                const data = d.data();
+                const s = data.status;
+                if (s === "archived" || s === "correction_needed") return false;
+                // Only allow questions that have been explicitly reviewed
+                if (data.reviewStatus !== "reviewed") return false;
+                return true;
             })
             .map(d => d.id);
 

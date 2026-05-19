@@ -29,11 +29,13 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    // Questions — students/parents never read directly (served via API route)
+    // Questions — students/parents never read directly (served via API route).
+    // Review workflow: ALL teachers can review/edit ANY question. Edits set
+    // reviewedBy / reviewedAt fields. Admins always have full control.
     match /questions/{questionId} {
       allow read: if isAdmin() || isTeacher();
       allow create: if isAdmin() || isTeacher();
-      allow update: if isAdmin() || (isTeacher() && resource.data.createdBy == request.auth.uid);
+      allow update: if isAdmin() || isTeacher();
       allow delete: if isAdmin();
     }
 

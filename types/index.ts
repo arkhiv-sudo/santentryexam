@@ -97,6 +97,14 @@ export interface Question {
     attemptCount?: number;
     correctCount?: number;
     lastAttemptedAt?: import("firebase/firestore").Timestamp | Date | string;
+    /** Review workflow:
+     *  - 'unreviewed' (default for all existing/new questions) — NOT eligible for exams
+     *  - 'reviewed' — vetted by a teacher/admin, eligible for inclusion in published exams
+     *  Updated by the teacher edit page when "Хянагдсан" is clicked. */
+    reviewStatus?: 'unreviewed' | 'reviewed';
+    reviewedBy?: string;       // UID of teacher/admin who reviewed
+    reviewedByName?: string;   // Display name at review time (denormalized for audit)
+    reviewedAt?: import("firebase/firestore").Timestamp | Date | string;
 }
 
 // Question served to students during exam (no answers/solutions)

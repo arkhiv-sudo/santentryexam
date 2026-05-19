@@ -8,18 +8,19 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Card, CardContent, CardHeader } from "@/components/ui/Card";
 import { toast } from "sonner";
-import { Edit2, Trash2, Plus, AlertCircle, X } from "lucide-react";
+import { Edit2, Trash2, Plus, AlertCircle, X, CheckCircle, Clock } from "lucide-react";
 import Link from "next/link";
 import { SettingsService } from "@/lib/services/settings-service";
 import { Subject } from "@/types";
 import MathRenderer from "@/components/exam/MathRenderer";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { DocumentData, QueryDocumentSnapshot } from "firebase/firestore";
+import { DocumentData, QueryDocumentSnapshot, doc, updateDoc } from "firebase/firestore";
 import { useConfirm } from "@/components/providers/ModalProvider";
 import { addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/components/AuthProvider";
 import { Question } from "@/types";
+import { toDate } from "@/lib/utils";
 
 const PAGE_SIZE = 10;
 
@@ -41,6 +42,8 @@ export default function TeacherQuestionsPage() {
     const [gradeFilter, setGradeFilter] = useState<string | "all">("all");
     const [subjectFilter, setSubjectFilter] = useState<string | "all">("all");
     const [authorFilter, setAuthorFilter] = useState<string | "all">("all");
+    const [reviewFilter, setReviewFilter] = useState<"all" | "unreviewed" | "reviewed">("all");
+    const [markingReviewId, setMarkingReviewId] = useState<string | null>(null);
     const [currentPage, setCurrentPage] = useState(0);
     const [lastVisibleDocs] = useState<(QueryDocumentSnapshot<DocumentData> | null)[]>([]);
 
@@ -137,7 +140,15 @@ export default function TeacherQuestionsPage() {
     }, [hasNext, currentPage, paginatedData?.lastVisible, queryClient, typeFilter, gradeFilter, subjectFilter, authorFilter]);
 
     const displayQuestions = useMemo(() => {
-        const currentQuestions = paginatedData?.questions || [];
+        let currentQuestions = paginatedData?.questions || [];
+
+        // Filter by review status (client-side since query is paginated)
+        if (reviewFilter === "unreviewed") {
+            currentQuestions = currentQuestions.filter(q => q.reviewStatus !== "reviewed");
+        } else if (reviewFilter === "reviewed") {
+            currentQuestions = currentQuestions.filter(q => q.reviewStatus === "reviewed");
+        }
+
         if (!searchTerm) return currentQuestions;
 
         const lowerTerm = searchTerm.toLowerCase();
@@ -145,7 +156,28 @@ export default function TeacherQuestionsPage() {
             q.content.toLowerCase().includes(lowerTerm) ||
             (q.subject && subjectsMap[q.subject]?.toLowerCase().includes(lowerTerm))
         );
-    }, [searchTerm, paginatedData?.questions, subjectsMap]);
+    }, [searchTerm, paginatedData?.questions, subjectsMap, reviewFilter]);
+
+    const handleMarkReviewed = async (q: Question) => {
+        if (!profile) return toast.error("Профайл олдсонгүй");
+        setMarkingReviewId(q.id);
+        try {
+            const reviewerName = `${profile.lastName || ""} ${profile.firstName || ""}`.trim();
+            await updateDoc(doc(db, "questions", q.id), {
+                reviewStatus: "reviewed",
+                reviewedBy: profile.uid,
+                reviewedByName: reviewerName,
+                reviewedAt: serverTimestamp(),
+            });
+            queryClient.invalidateQueries({ queryKey: ["questions"] });
+            toast.success("Хянагдсан гэж тэмдэглэгдлээ");
+        } catch (err: unknown) {
+            console.error("[handleMarkReviewed]", err);
+            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
+        } finally {
+            setMarkingReviewId(null);
+        }
+    };
 
     const handleNext = () => {
         if (hasNext) {
@@ -258,7 +290,9 @@ export default function TeacherQuestionsPage() {
             <div className="flex justify-between items-center bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
                 <div>
                     <h1 className="text-2xl font-bold text-slate-900">Асуултын сан</h1>
-                    <p className="text-slate-500 text-sm">Таны үүсгэсэн болон ашиглах боломжтой асуултууд</p>
+                    <p className="text-slate-500 text-sm">
+                        Бүх асуултыг хянана. Зөвхөн <span className="font-bold text-emerald-600">Хянагдсан</span> асуултууд шалгалтад орох эрхтэй.
+                    </p>
                 </div>
                 <Link href="/teacher/questions/create">
                     <button className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-sm">
@@ -321,6 +355,15 @@ export default function TeacherQuestionsPage() {
                                 <option key={a.uid} value={a.uid}>{a.lastName} {a.firstName}</option>
                             ))}
                         </Select>
+                        <Select
+                            value={reviewFilter}
+                            onChange={(e) => setReviewFilter(e.target.value as "all" | "unreviewed" | "reviewed")}
+                            className="h-9 text-sm min-w-[140px]"
+                        >
+                            <option value="all">Бүх төлөв</option>
+                            <option value="unreviewed">⏳ Хянаагүй</option>
+                            <option value="reviewed">✓ Хянагдсан</option>
+                        </Select>
                     </div>
                 </CardHeader>
                 <CardContent>
@@ -329,19 +372,20 @@ export default function TeacherQuestionsPage() {
                             <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
                                 <tr>
                                     <th className="px-6 py-4">Агуулга</th>
-                                    <th className="px-6 py-4 w-32">Төрөл</th>
+                                    <th className="px-4 py-4 w-36 text-center">Хяналт</th>
+                                    <th className="px-6 py-4 w-28">Төрөл</th>
                                     <th className="px-6 py-4 w-32">Сэдэв</th>
                                     <th className="px-6 py-4 w-24">Анги</th>
                                     <th className="px-6 py-4 w-32 text-left">Багш</th>
-                                    <th className="px-6 py-4 w-32 text-left">Огноо</th>
-                                    <th className="px-6 py-4 w-20 text-center">Оноо</th>
-                                    <th className="px-6 py-4 w-32 text-right">Үйлдэл</th>
+                                    <th className="px-6 py-4 w-28 text-left">Огноо</th>
+                                    <th className="px-6 py-4 w-16 text-center">Оноо</th>
+                                    <th className="px-6 py-4 w-40 text-right">Үйлдэл</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
                                 {loading ? (
                                     <tr>
-                                        <td colSpan={8} className="px-6 py-12 text-center text-slate-500">
+                                        <td colSpan={9} className="px-6 py-12 text-center text-slate-500">
                                             <div className="flex flex-col items-center gap-2">
                                                 <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
                                                 Ачаалж байна...
@@ -350,7 +394,7 @@ export default function TeacherQuestionsPage() {
                                     </tr>
                                 ) : isError ? (
                                     <tr>
-                                        <td colSpan={8} className="px-6 py-12 text-center text-red-500">
+                                        <td colSpan={9} className="px-6 py-12 text-center text-red-500">
                                             <p className="font-bold">Алдаа гарлаа</p>
                                             <p className="text-sm opacity-80">{(error as Error)?.message || "Өгөгдлийг татахад алдаа гарлаа"}</p>
                                             <button
@@ -363,7 +407,7 @@ export default function TeacherQuestionsPage() {
                                     </tr>
                                 ) : displayQuestions.length === 0 ? (
                                     <tr>
-                                        <td colSpan={8} className="px-6 py-12 text-center text-slate-500 italic">
+                                        <td colSpan={9} className="px-6 py-12 text-center text-slate-500 italic">
                                             Асуулт олдсонгүй.
                                         </td>
                                     </tr>
@@ -377,6 +421,30 @@ export default function TeacherQuestionsPage() {
                                                 {q.mediaUrl && (
                                                     <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-600 mt-2 uppercase tracking-wider">
                                                         Медиа: {q.mediaType}
+                                                    </span>
+                                                )}
+                                            </td>
+                                            {/* Review status */}
+                                            <td className="px-4 py-4 text-center">
+                                                {q.reviewStatus === 'reviewed' ? (
+                                                    <div className="flex flex-col items-center gap-0.5">
+                                                        <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-emerald-50 text-emerald-700 px-2 py-1 rounded-full border border-emerald-200">
+                                                            <CheckCircle className="w-3 h-3" /> Хянагдсан
+                                                        </span>
+                                                        {q.reviewedByName && (
+                                                            <span className="text-[9px] text-slate-500 mt-0.5">
+                                                                {q.reviewedByName}
+                                                            </span>
+                                                        )}
+                                                        {q.reviewedAt && (
+                                                            <span className="text-[9px] text-slate-400">
+                                                                {toDate(q.reviewedAt).toLocaleDateString("mn-MN")}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-amber-50 text-amber-700 px-2 py-1 rounded-full border border-amber-200">
+                                                        <Clock className="w-3 h-3" /> Хянаагүй
                                                     </span>
                                                 )}
                                             </td>
@@ -401,8 +469,19 @@ export default function TeacherQuestionsPage() {
                                             <td className="px-6 py-4 text-center font-bold text-slate-700">{q.points || 1}</td>
                                             <td className="px-6 py-4 text-right">
                                                 <div className="flex justify-end gap-2">
+                                                    {/* Mark as reviewed (only show if unreviewed) */}
+                                                    {q.reviewStatus !== 'reviewed' && (
+                                                        <button
+                                                            onClick={() => handleMarkReviewed(q)}
+                                                            disabled={markingReviewId === q.id}
+                                                            className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all disabled:opacity-50"
+                                                            title="Хянасан гэж тэмдэглэх"
+                                                        >
+                                                            <CheckCircle className="w-4 h-4" />
+                                                        </button>
+                                                    )}
                                                     <Link href={`/teacher/questions/edit/${q.id}`}>
-                                                        <button className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all" title="Засах">
+                                                        <button className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all" title="Засах (засаад хадгалбал автоматаар хянагдсан болно)">
                                                             <Edit2 className="w-4 h-4" />
                                                         </button>
                                                     </Link>
