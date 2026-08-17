@@ -2,9 +2,7 @@
  * FIX 34: Centralised password complexity validation.
  *
  * Applied wherever users (or generated credentials) set a new password:
- *  - parent signup
  *  - change-password page
- *  - parent-created child accounts (sanity-check on generated temp password)
  */
 
 export interface PasswordCheckResult {

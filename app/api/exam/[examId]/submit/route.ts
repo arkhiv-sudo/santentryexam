@@ -64,26 +64,40 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
             return NextResponse.json({ error: "Шалгалт олдсонгүй." }, { status: 404 });
         }
         const examData = examDoc.data()!;
+
+        // Хугацааны шалгалт СЕРВЕР талд. Өмнө нь энд огт шалгадаггүй байсан тул
+        // цаг дууссаны дараа ч илгээх боломжтой байв. Автомат илгээлт болон
+        // сүлжээний саатлыг тооцож 2 минутын тэвчих хугацаа өгнө.
+        const startedAtMs: number | null = examData.startedAt?.toMillis?.() ?? null;
+        if (!adminOverride && startedAtMs) {
+            const GRACE_MS = 2 * 60 * 1000;
+            const examEndMs = startedAtMs + (examData.duration || 60) * 60 * 1000;
+            if (Date.now() > examEndMs + GRACE_MS) {
+                return NextResponse.json({ error: "Шалгалтын хугацаа дууссан тул илгээх боломжгүй." }, { status: 403 });
+            }
+        }
+
         const questionIds: string[] = examData.questionIds || [];
         const passingScoreNum = examData.passingScore || 0;
         const MAX_VIOLATIONS = 3;
 
-        // ✓ Check violations — reject if student exceeded MAX_VIOLATIONS regardless of status.
-        // B2: Skip this gate for admin force-submit so a stuck/offline student can still
-        // be wrapped up by an admin.
-        if (!adminOverride) {
-            const regForViolationCheck = await adminDb.collection("registrations")
-                .where("examId", "==", examId)
-                .where("studentId", "==", studentId)
-                .limit(1)
-                .get();
-            if (!regForViolationCheck.empty) {
-                const regData = regForViolationCheck.docs[0].data();
-                if ((regData.violations || 0) >= MAX_VIOLATIONS) {
-                    return NextResponse.json({ error: "Хуулах оролдлогоос олон шалгалт хүчингүй болсонаар." }, { status: 403 });
-                }
-            }
-        }
+        // Зөрчлийн шалгалт — БЛОКЛОХГҮЙ.
+        //
+        // Өмнө нь энд 403 буцаадаг байсан нь сурагчийн бүх хариултыг алдагдуулж
+        // байсан: клиент 3 дахь зөрчил дээр автоматаар илгээхийг оролдоод сервер
+        // татгалзахад submission ч, дүн ч үүсэхгүй, зөвхөн 60 секунд тутмын draft
+        // үлддэг байв. Одоо илгээлтийг ХҮЛЭЭЖ АВААД `invalidatedByViolation`
+        // тугаар тэмдэглэнэ — хариулт бүрэн хадгалагдаж, дүнг хүчинтэй болгох
+        // эсэхийг админ шийднэ (/api/admin/results/validity).
+        const registrationQuery = await adminDb.collection("registrations")
+            .where("examId", "==", examId)
+            .where("studentId", "==", studentId)
+            .limit(1)
+            .get();
+        const violationCount = registrationQuery.empty
+            ? 0
+            : (registrationQuery.docs[0].data().violations as number | undefined) || 0;
+        const invalidatedByViolation = !adminOverride && violationCount >= MAX_VIOLATIONS;
 
         // FIX 29: Enforce maxAttempts at submission time. Count previously approved
         // retake requests for this student+exam and reject if attempts exceed the limit.
@@ -346,6 +360,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
             // FIX 23: Always attribute force-submit to the authenticated caller from the
             // session cookie. Never trust body.adminUid which can be spoofed by clients.
             forceSubmittedByAdmin: adminOverride ? callerUid : null,
+            invalidatedByViolation,
+            violations: violationCount,
         });
 
         const resultRef = adminDb.collection("exam_results").doc();
@@ -362,6 +378,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
             passingScore: passingScoreNum,
             gradedAt: now,
             timeTaken: timeTaken || 0,
+            invalidatedByViolation,
+            violations: violationCount,
             rank: null // will be recalculated async below
         });
         
@@ -370,12 +388,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
              totalParticipants: FieldValue.increment(1)
         });
 
-        const registrationQuery = await adminDb.collection("registrations")
-            .where("examId", "==", examId)
-            .where("studentId", "==", studentId)
-            .limit(1)
-            .get();
-            
         if (!registrationQuery.empty) {
             submitBatch.update(registrationQuery.docs[0].ref, {
                 status: "completed",
@@ -417,16 +429,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
             // FIX 5: Rank ALL participants, not just those who passed.
             // The previous filter on passed==true excluded failing students from the ranking,
             // producing misleading rank numbers (e.g., only 5 students ranked out of 50 actual).
+            // ⚠️ Энд `orderBy("score","desc")` БАЙЖ БОЛОХГҮЙ: тэр нь
+            // (examId ASC + score DESC) composite index шаарддаг бөгөөд тухайн
+            // индекс төсөлд үүсээгүй тул query нь FAILED_PRECONDITION-оор унаж,
+            // fire-and-forget catch дотор чимээгүй залгигдаж байсан — үүнээс болж
+            // зэрэглэл (rank) хэзээ ч бичигддэггүй байв. Эрэмбийг доор JS дотор
+            // хийдэг тул query-д эрэмбэлэх шаардлагагүй.
             const allResultsSnap = await adminDb.collection("exam_results")
                 .where("examId", "==", eid)
-                .orderBy("score", "desc")
                 .get();
 
             if (allResultsSnap.empty) return;
 
-            const totalParticipants = allResultsSnap.size;
+            // Зөрчлийн улмаас хүчингүй болсон дүн эрэмбэд ОРОХГҮЙ — rank нь null
+            // хэвээр үлдэж, бусад сурагчийн байрыг ч эзэлэхгүй.
+            const invalidDocs = allResultsSnap.docs.filter(d => d.data().invalidatedByViolation === true);
+            const validDocs = allResultsSnap.docs.filter(d => d.data().invalidatedByViolation !== true);
+            const totalParticipants = validDocs.length;
 
-            const resultsData = allResultsSnap.docs.map(d => {
+            const resultsData = validDocs.map(d => {
                 const data = d.data();
                 return {
                     id: d.id,
@@ -445,7 +466,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
 
             // FIX 26: Collect updates first then commit in chunks of <=400 ops to stay
             // well below Firestore's 500-op batch limit even for large exams.
-            const updates: { ref: FirebaseFirestore.DocumentReference; data: { rank: number; totalParticipants: number } }[] = [];
+            const updates: { ref: FirebaseFirestore.DocumentReference; data: { rank: number | null; totalParticipants: number } }[] = [];
+            invalidDocs.forEach(d => {
+                if (d.data().rank !== null) {
+                    updates.push({ ref: d.ref, data: { rank: null, totalParticipants } });
+                }
+            });
             resultsData.forEach((res, i) => {
                 const newRank = i + 1;
                 if (res.rank !== newRank || res.totalParticipants !== totalParticipants) {
@@ -469,7 +495,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
             console.error('[submit] Rank recalculation failed:', err);
         });
 
-        return NextResponse.json({ success: true, score, percentage, passed });
+        return NextResponse.json({ success: true, score, percentage, passed, invalidatedByViolation });
     } catch (error: unknown) {
         console.error("Submission error:", error);
         return NextResponse.json({ error: error instanceof Error ? error.message : "Internal server error" }, { status: 500 });

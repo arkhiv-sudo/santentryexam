@@ -22,6 +22,8 @@ export type AuditAction =
     | 'retake_reject'
     | 'question_correction_approve'
     | 'question_correction_reject'
+    | 'student_import'
+    | 'exam_code_regenerate'
     | 'bulk_action';
 
 export interface AuditEntry {

@@ -355,30 +355,41 @@ export function QuestionForm({
 
                     {(formData.type !== "multiple_choice") && (
                         <Card className="border-emerald-100 bg-emerald-50/30">
-                            <CardContent className="pt-6">
-                                <label className="block text-sm font-bold text-emerald-900 mb-2">
+                            <CardContent className="pt-6 space-y-2">
+                                <label className="block text-sm font-bold text-emerald-900 mb-1">
                                     Зөв хариулт
                                 </label>
-                                <Input
+                                <textarea
                                     value={formData.correctAnswer}
                                     onChange={(e) => setFormData({ ...formData, correctAnswer: e.target.value })}
-                                    placeholder="Зөв хариултыг энд бичнэ үү..."
+                                    placeholder="Зөв хариултыг энд бичнэ үү (LaTeX дэмжинэ: $x^2$, $\dfrac{1}{2}$)"
                                     required
-                                    className="bg-white border-emerald-100"
+                                    rows={2}
+                                    className="w-full p-3 rounded-xl border border-emerald-200 bg-white focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all resize-y"
                                 />
+                                <p className="text-[10px] text-emerald-700/70 italic">
+                                    Жишээ: <code className="bg-white px-1 rounded">$\dfrac{`{5}{6}`}$</code> →
+                                    хажуу preview-д <strong>5/6</strong> хэлбэрээр харагдана
+                                </p>
                             </CardContent>
                         </Card>
                     )}
 
                     <Card className="border border-slate-200">
                         <CardContent className="pt-6 space-y-4">
-                            <label className="block text-sm font-semibold text-slate-700 mb-2">Бодолт (Тайлбар)</label>
+                            <label className="block text-sm font-semibold text-slate-700 mb-1">Бодолт (Тайлбар)</label>
                             <textarea
                                 className="w-full min-h-[120px] p-4 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all resize-y"
-                                placeholder="Зөв хариултын тайлбар, бодолтыг энд бичнэ үү..."
+                                placeholder="Зөв хариултын тайлбар, бодолтыг энд бичнэ үү (LaTeX дэмжинэ: $x^2$, $\dfrac{a}{b}$, \sqrt{x})"
                                 value={formData.solution}
                                 onChange={(e) => setFormData({ ...formData, solution: e.target.value })}
                             />
+                            <p className="text-[10px] text-slate-500 italic">
+                                <strong>LaTeX дэмжинэ:</strong> <code className="bg-slate-100 px-1 rounded">$x^2 + y^2 = r^2$</code>,
+                                <code className="bg-slate-100 px-1 rounded ml-1">\dfrac{`{a}{b}`}</code>,
+                                <code className="bg-slate-100 px-1 rounded ml-1">\sqrt{`{x}`}</code>.
+                                Бичих болгонд хажуу талын preview-д шууд харагдана.
+                            </p>
 
                             <div className="mt-4 bg-slate-50 p-4 rounded-xl border border-dashed border-slate-300">
                                 <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Бодолтын зураг (Заавал биш)</label>

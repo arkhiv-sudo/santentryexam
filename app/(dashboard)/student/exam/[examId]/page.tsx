@@ -14,17 +14,46 @@ import { useServerTime, getServerTimeValue, offsetReadyPromise } from "@/hooks/u
 import { ExamQuestion, Registration } from "@/types";
 import { db } from "@/lib/firebase";
 import { doc, onSnapshot, addDoc, collection, serverTimestamp } from "firebase/firestore";
-import { AlertTriangle, Clock, Send, ChevronLeft, ChevronRight, CheckCircle, Loader2 } from "lucide-react";
+import { AlertTriangle, Clock, Send, ChevronLeft, ChevronRight, CheckCircle, Loader2, Maximize, RotateCcw } from "lucide-react";
 import ExamSupportChat from "@/components/exam/ExamSupportChat";
+import { useConfirm } from "@/components/providers/ModalProvider";
+import { requestFullscreen, exitFullscreen, isFullscreenActive, onFullscreenChange } from "@/lib/fullscreen";
 
 const AUTOSAVE_KEY = (examId: string, uid: string) => `exam_draft_${examId}_${uid}`;
+
+/** Тоон хариулт хүлээж буй асуулт эсэх. Сервер `answerFormat`-ыг хариултын
+ *  түлхүүрээс тооцож дамжуулдаг (зөв хариу задардаггүй). */
+/** Админаас сануулга ирэхэд богино дуут дохио (файлгүй, WebAudio). */
+function playAlertSound() {
+    try {
+        const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        if (!Ctx) return;
+        const ctx = new Ctx();
+        [0, 0.22].forEach(delay => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain); gain.connect(ctx.destination);
+            osc.type = "square";
+            osc.frequency.setValueAtTime(760, ctx.currentTime + delay);
+            gain.gain.setValueAtTime(0.0001, ctx.currentTime + delay);
+            gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + delay + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + delay + 0.18);
+            osc.start(ctx.currentTime + delay);
+            osc.stop(ctx.currentTime + delay + 0.2);
+        });
+        setTimeout(() => ctx.close().catch(() => {}), 800);
+    } catch { /* дуугүй ч ажиллана */ }
+}
+
+const isNumericAnswer = (q: ExamQuestion) =>
+    q.type !== "multiple_choice" && (q.answerFormat === "number" || q.answerFormat === "fraction");
 const MAX_VIOLATIONS = 3;
 
 interface ExamMeta {
     title: string;
     duration: number;
     grade: string;
-    scheduledAt: number;
+    scheduledAt: number | null;
     registrationId: string;
     registrationStatus: string;
     passingScore?: number;
@@ -35,6 +64,7 @@ export default function ExamPage() {
     const params = useParams();
     const examId = params.examId as string;
     const router = useRouter();
+    const confirm = useConfirm();
 
     // Initialize server time hook to ensure global offset is calculated
     useServerTime();
@@ -53,8 +83,17 @@ export default function ExamPage() {
     const [submitFailed, setSubmitFailed] = useState(false);
     const [violations, setViolations] = useState(0);
     const [showViolationWarning, setShowViolationWarning] = useState(false);
-    const [preloading, setPreloading] = useState(false);
-    const [preloadCountdown, setPreloadCountdown] = useState(15);
+    // ── Хүлээх танхим ────────────────────────────────────────────────────
+    /** Сурагч «Бэлэн боллоо» дарсан эсэх. */
+    const [isReady, setIsReady] = useState(false);
+    const [readySubmitting, setReadySubmitting] = useState(false);
+    /** Админ шалгалтыг эхлүүлсэн мөч (сервер дата). Энэ тавигдтал шалгалт эхлэхгүй. */
+    const [examStartedAt, setExamStartedAt] = useState<number | null>(null);
+    /** Шалгалтын үндсэн мэдээлэл (хүлээх танхимд харуулах). */
+    const [examInfo, setExamInfo] = useState<{ title: string; duration: number; grade: string; scheduledAt: number | null } | null>(null);
+    /** Админаас ирсэн сануулга — дэлгэц дүүрэн анхааруулга. */
+    const [nudge, setNudge] = useState(false);
+
     const [liveReg, setLiveReg] = useState<Registration | null>(null);
     const [retakeRequested, setRetakeRequested] = useState(false);
     const [acknowledgedRules, setAcknowledgedRules] = useState(false);
@@ -66,9 +105,14 @@ export default function ExamPage() {
     const [reportReason, setReportReason] = useState("");
     const [reportSubmitting, setReportSubmitting] = useState(false);
     // FIX E2: Capture submit result so we can show score on the success screen
-    const [submitResult, setSubmitResult] = useState<{ score: number; percentage: number; passed: boolean } | null>(null);
+    const [submitResult, setSubmitResult] = useState<{ score: number; percentage: number; passed: boolean; invalidatedByViolation?: boolean } | null>(null);
+    // ── Бүтэн дэлгэц (fullscreen) төлөв ────────────────────────────────────
+    const [isFullscreen, setIsFullscreen] = useState(false);
+    // Сурагч бүтэн дэлгэцээс гарсан үед гарах анхааруулах самбар
+    const [showFullscreenPrompt, setShowFullscreenPrompt] = useState(false);
 
     const violationsRef = useRef(0);
+    const answeredCountRef = useRef(0);
     const submittedRef = useRef(false);
     const startedRef = useRef(false);
     const answersRef = useRef(answers);
@@ -86,8 +130,35 @@ export default function ExamPage() {
     // A2: Stable shuffled option ordering per question (keyed by question id) so that
     // re-renders don't reshuffle options mid-question.
     const shuffledOptionsRef = useRef<Record<string, number[]>>({});
+    // Бүтэн дэлгэц НЭГ Ч УДАА амжилттай асаагдсан эсэх. Зөвхөн энэ тохиолдолд л
+    // дараа нь гарахад анхааруулах самбар харуулна (эхнээсээ татгалзсан/дэмжээгүй
+    // browser дээр сурагчийг хаахгүй).
+    const fullscreenEngagedRef = useRef(false);
+    /** Сүүлд харсан сануулгын мөч — давхар дуугаргахгүйн тулд. */
+    const lastNudgeRef = useRef<number>(0);
 
     useEffect(() => { answersRef.current = answers; }, [answers]);
+
+    // ── Шалгалтын доккументийг сонсох: админ эхлүүлмэгц бүх сурагчид зэрэг эхэлнэ ──
+    useEffect(() => {
+        if (!user) return;
+        const unsub = onSnapshot(doc(db, "exams", examId), d => {
+            if (!d.exists()) return;
+            const e = d.data();
+            const startedMs = e.startedAt?.toMillis?.() ?? null;
+            setExamInfo({
+                title: e.title || "Шалгалт",
+                duration: e.duration || 60,
+                grade: e.grade || "",
+                scheduledAt: e.scheduledAt?.toMillis?.() ?? null,
+            });
+            setExamStartedAt(prev => {
+                if (!prev && startedMs) toast.success("Шалгалт эхэллээ!");
+                return startedMs;
+            });
+        }, err => console.error("[exam listener]", err));
+        return () => unsub();
+    }, [examId, user]);
 
     // ── Live listener to handle admin forced updates ───────────────────────
     useEffect(() => {
@@ -96,6 +167,13 @@ export default function ExamPage() {
             if (d.exists()) {
                 const data = d.data() as Registration;
                 setLiveReg(data);
+                // Админаас ирсэн сануулга
+                const nudgedMs = (data.nudgedAt as unknown as { toMillis?: () => number })?.toMillis?.() ?? 0;
+                if (nudgedMs && nudgedMs > lastNudgeRef.current) {
+                    lastNudgeRef.current = nudgedMs;
+                    setNudge(true);
+                    playAlertSound();
+                }
                 // Force submit from admin
                 if (data.forceSubmitted && !submittedRef.current) {
                     toast.error("Шалгалт админаас хүчээр дуусгагдлаа!");
@@ -199,8 +277,11 @@ export default function ExamPage() {
     }, [user?.uid, examId]);
 
     // ── Fetch questions via secure API route ───────────────────────────────
+    // Зөвхөн админ шалгалтыг эхлүүлсний ДАРАА асуулт татна. Түүнээс өмнө
+    // сервер 403 (notStarted) буцаадаг тул хүлээх танхим харагдана.
     useEffect(() => {
         if (authLoading || !user) return;
+        if (!examStartedAt) { setLoading(false); return; }
 
         const fetchQuestions = async () => {
             setLoading(true);
@@ -216,18 +297,21 @@ export default function ExamPage() {
                     title: data.title,
                     duration: data.duration,
                     grade: data.grade,
-                    scheduledAt: data.scheduledAt,
+                    scheduledAt: data.scheduledAt ?? null,
                     registrationId: data.registrationId,
                     registrationStatus: data.registrationStatus,
                     passingScore: data.passingScore,
                 });
+                // Шалгалт эхэлсэн тул шууд ажиллуулна
+                setStarted(true);
+                startedRef.current = true;
+                if (examStartedAtRef.current === 0) examStartedAtRef.current = data.startedAt || Date.now();
                 // A2: Don't pre-shuffle options here on every fetch. We compute and cache
                 // a stable shuffled order per-question via getShuffledOptions() below so
                 // that the student sees the same option order across re-renders.
                 setQuestions(data.questions as ExamQuestion[]);
-                // #2 FIX: Compute remaining time from real scheduledAt so a late
-                // page-load or reload shows the correct countdown, not full duration.
-                const examEndMs = data.scheduledAt + data.duration * 60_000;
+                // Үлдсэн хугацааг СЕРВЕРИЙН эхлүүлсэн мөчөөс тооцно — бүх сурагчид ижил.
+                const examEndMs = (data.startedAt || examStartedAt) + data.duration * 60_000;
                 const remaining = Math.floor((examEndMs - getServerTimeValue()) / 1000);
                 setTimeLeft(Math.max(0, remaining));
             } catch {
@@ -238,7 +322,7 @@ export default function ExamPage() {
         };
 
         fetchQuestions();
-    }, [examId, user, authLoading]);
+    }, [examId, user, authLoading, examStartedAt]);
 
     // ── FIX 13: Re-compute timeLeft once server offset is known ───────────────
     // If fetchQuestions ran before the NTP offset resolved, getServerTimeValue()
@@ -249,8 +333,8 @@ export default function ExamPage() {
         offsetReadyPromise.then(() => {
             if (cancelled) return;
             setMeta(prevMeta => {
-                if (!prevMeta) return prevMeta;
-                const examEndMs = prevMeta.scheduledAt + prevMeta.duration * 60_000;
+                if (!prevMeta || !examStartedAt) return prevMeta;
+                const examEndMs = examStartedAt + prevMeta.duration * 60_000;
                 const remaining = Math.floor((examEndMs - getServerTimeValue()) / 1000);
                 setTimeLeft(Math.max(0, remaining));
                 return prevMeta;
@@ -321,6 +405,7 @@ export default function ExamPage() {
                     score: data.score,
                     percentage: data.percentage,
                     passed: !!data.passed,
+                    invalidatedByViolation: !!data.invalidatedByViolation,
                 });
             }
 
@@ -348,6 +433,22 @@ export default function ExamPage() {
         }
     }, [user, profile, examId, meta]); // answers and timeLeft removed: we now read answersRef.current and compute timeTaken from examStartedAtRef
 
+    /** Илгээхийн өмнөх баталгаажуулалт — browser-ийн стандарт цонхны оронд
+     *  аппын өөрийн модалыг ашиглана. */
+    const confirmAndSubmit = useCallback(async () => {
+        const unanswered = questions.length - answeredCountRef.current;
+        const ok = await confirm({
+            title: "Шалгалтаа илгээх үү?",
+            message: unanswered > 0
+                ? `${unanswered} асуулт хариулаагүй байна. Илгээсний дараа хариултаа засах боломжгүй.`
+                : "Та бүх асуултад хариулсан байна. Илгээсний дараа хариултаа засах боломжгүй.",
+            confirmLabel: "Тийм, илгээх",
+            variant: unanswered > 0 ? "destructive" : "default",
+        });
+        if (ok) handleSubmitRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [confirm, questions.length]);
+
     const handleSubmit = useCallback(async () => {
         if (submittedRef.current || !user || !meta) return;
         submittedRef.current = true;
@@ -371,7 +472,8 @@ export default function ExamPage() {
             return;
         }
 
-        const examEndMs = meta.scheduledAt + meta.duration * 60_000 + (liveReg?.extendedTime ? liveReg.extendedTime * 1000 : 0);
+        if (!examStartedAt) return;
+        const examEndMs = examStartedAt + meta.duration * 60_000 + (liveReg?.extendedTime ? liveReg.extendedTime * 1000 : 0);
 
         const timer = setInterval(() => {
             const remaining = Math.floor((examEndMs - getServerTimeValue()) / 1000);
@@ -391,34 +493,6 @@ export default function ExamPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [started, meta, liveReg?.extendedTime]); // ✅ added extendedTime so time updates natively
     
-    // ── 15s Preload Countdown ──────────────────────────────────────────────
-    useEffect(() => {
-        if (!preloading) return;
-        if (preloadCountdown <= 0) {
-             setPreloading(false);
-             setStarted(true);
-             startedRef.current = true;
-             // FIX 2: Record exact wall-clock start time for accurate timeTaken calculation
-             examStartedAtRef.current = Date.now();
-
-             ExamService.startExam(user!.uid, examId).catch(() => {});
-             
-             ExamService.getStudentRegistration(user!.uid, examId).then(reg => {
-                 if (reg && reg.violations) {
-                     violationsRef.current = reg.violations;
-                     setViolations(reg.violations);
-                 }
-             }).catch(() => {});
-             return;
-        }
-        
-        const timer = setTimeout(() => {
-             setPreloadCountdown(prev => prev - 1);
-        }, 1000);
-        
-        return () => clearTimeout(timer);
-    }, [preloading, preloadCountdown, user, examId]);
-
     // ── Anti-cheating: tab switch detection ────────────────────────────────
     // B4: Use ONLY the server-confirmed violation count as the authoritative
     // value. We no longer optimistically bump violationsRef before the server
@@ -437,7 +511,16 @@ export default function ExamPage() {
         setViolations(serverCount);
 
         if (serverCount >= MAX_VIOLATIONS) {
-            toast.error("Дүрэм зөрчсөн тул шалгалт автоматаар дууссан");
+            // Хариултыг ЮУНЫ ӨМНӨ сервер рүү хадгална. Автомат хадгалалт 60
+            // секунд тутам ажилладаг тул үүнгүйгээр сүүлийн 1 минутын ажил
+            // алдагдах эрсдэлтэй. Дараа нь илгээнэ — сервер илгээлтийг хүлээж
+            // авах ба дүнг нь "зөрчилтэй" гэж тэмдэглэнэ.
+            try {
+                await ExamService.saveDraftAnswers(user.uid, examId, answersRef.current);
+            } catch (err) {
+                console.error("Зөрчлийн үеийн draft хадгалалт амжилтгүй", err);
+            }
+            toast.error("Дүрэм зөрчсөн тул шалгалт автоматаар дуусч, хариулт илгээгдлээ");
             setShowViolationWarning(true);
             handleSubmitRef.current();
         } else {
@@ -474,18 +557,82 @@ export default function ExamPage() {
         };
     }, [started, handleVisibilityChange]);
 
-    // ── Start exam ─────────────────────────────────────────────────────────
-    const handleStart = async () => {
-        if (!user || !meta) return;
-        // B1: Fire startExam SERVER-SIDE immediately when the student clicks the
-        // start button, so the registration's startedAt reflects the real start
-        // (not the moment after the 15s preload). Errors are non-fatal.
-        try {
-            await ExamService.startExam(user.uid, examId);
-        } catch (err) {
-            console.error("startExam failed:", err);
+    // ── Бүтэн дэлгэцийн өөрчлөлтийг сонсох ─────────────────────────────────
+    // ЧУХАЛ: Fullscreen-ээс гарахыг дүрэм зөрчилд (violations) НЭМЭХГҮЙ.
+    // Энэ нь зөвхөн анхааруулга бөгөөд шалгалтыг зогсоохгүй.
+    useEffect(() => {
+        if (!started) return;
+
+        const syncFullscreenState = () => {
+            const active = isFullscreenActive();
+            setIsFullscreen(active);
+            if (active) {
+                setShowFullscreenPrompt(false);
+            } else if (fullscreenEngagedRef.current && !submittedRef.current) {
+                setShowFullscreenPrompt(true);
+            }
+        };
+
+        syncFullscreenState();
+        return onFullscreenChange(syncFullscreenState);
+    }, [started]);
+
+    // ── Илгээсний дараа бүтэн дэлгэцээс гарах ──────────────────────────────
+    useEffect(() => {
+        if (!submitted) return;
+        setShowFullscreenPrompt(false);
+        void exitFullscreen();
+    }, [submitted]);
+
+    // ── Компонент unmount хийгдэхэд бүтэн дэлгэцээс гарах ──────────────────
+    useEffect(() => {
+        return () => { void exitFullscreen(); };
+    }, []);
+
+    // ── Бүтэн дэлгэц рүү буцах (ЗААВАЛ хэрэглэгчийн товшилтоос дуудагдана) ──
+    const handleReenterFullscreen = async () => {
+        const ok = await requestFullscreen();
+        if (ok) {
+            fullscreenEngagedRef.current = true;
+            setIsFullscreen(true);
+            setShowFullscreenPrompt(false);
+        } else {
+            toast.warning("Бүтэн дэлгэц рүү шилжиж чадсангүй. Browser-ийн зөвшөөрлөө шалгана уу.");
         }
-        setPreloading(true);
+    };
+
+    // ── Start exam ─────────────────────────────────────────────────────────
+    /** «Бэлэн боллоо» — бүтэн дэлгэц асааж, серверт бэлэн болсноо мэдэгдэнэ.
+     *  Шалгалт ЭНД эхлэхгүй: админ «Бүгдэд эхлүүлэх» дарахыг хүлээнэ. */
+    const handleReady = async () => {
+        if (!user) return;
+
+        // ⚠️ requestFullscreen-ыг товшилтын дотор, ямар нэг await-аас ӨМНӨ дуудна.
+        const fullscreenPromise = requestFullscreen();
+        setReadySubmitting(true);
+        try {
+            const res = await fetch(`/api/exam/${examId}/ready`, { method: "POST" });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                toast.error(data.error || "Бэлэн болсныг бүртгэхэд алдаа гарлаа");
+                return;
+            }
+            setIsReady(true);
+            toast.success("Бэлэн боллоо. Багш эхлүүлэхийг хүлээнэ үү.");
+        } catch (err) {
+            console.error("[ready]", err);
+            toast.error("Сервертэй холбогдож чадсангүй");
+        } finally {
+            setReadySubmitting(false);
+        }
+
+        const fullscreenOk = await fullscreenPromise;
+        if (fullscreenOk) {
+            fullscreenEngagedRef.current = true;
+            setIsFullscreen(true);
+        } else {
+            toast.warning("Бүтэн дэлгэц асаагдсангүй. Шалгалт үргэлжилнэ, гэхдээ бүтэн дэлгэц дээр өгөхийг зөвлөж байна.");
+        }
     };
 
 
@@ -524,6 +671,7 @@ export default function ExamPage() {
     };
 
     const answeredCount = questions.filter(q => answers[q.id]?.trim()).length;
+    answeredCountRef.current = answeredCount;
 
     // ─── Render: loading / error ──────────────────────────────────────────────
     if (loading || authLoading) {
@@ -588,7 +736,7 @@ export default function ExamPage() {
 
     // ─── Render: already submitted ────────────────────────────────────────────
     if (submitted) {
-        const _examEndMs = meta ? meta.scheduledAt + meta.duration * 60_000 + (liveReg?.extendedTime ? liveReg.extendedTime * 1000 : 0) : 0;
+        const _examEndMs = (meta && examStartedAt) ? examStartedAt + meta.duration * 60_000 + (liveReg?.extendedTime ? liveReg.extendedTime * 1000 : 0) : 0;
         const _canRetake = getServerTimeValue() < _examEndMs;
 
         return (
@@ -603,8 +751,22 @@ export default function ExamPage() {
                             <p className="text-slate-500">Таны хариулт хадгалагдсан. Дүн тооцоологдсоны дараа харагдах болно.</p>
                         </div>
 
+                        {/* Зөрчлийн улмаас дүн эргэлзээтэй болсон тохиолдол */}
+                        {submitResult?.invalidatedByViolation && (
+                            <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-5 text-left space-y-2">
+                                <p className="font-black text-amber-900 flex items-center gap-2">
+                                    <AlertTriangle className="w-5 h-5" /> Дүрэм зөрчсөн тэмдэглэгээтэй
+                                </p>
+                                <p className="text-sm text-amber-800">
+                                    Таны хариултууд бүрэн хадгалагдсан. Гэвч цонх/таб {MAX_VIOLATIONS} удаа
+                                    солигдсон тул дүн тань <strong>шалгагдах хүртэл түр эргэлзээтэй</strong> гэж
+                                    тэмдэглэгдлээ. Эцсийн шийдвэрийг багш/админ гаргана.
+                                </p>
+                            </div>
+                        )}
+
                         {/* FIX E2: Show the captured score breakdown when available */}
-                        {submitResult && (
+                        {submitResult && !submitResult.invalidatedByViolation && (
                             <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-2xl p-6 my-4 text-center">
                                 <div className="text-5xl font-black text-blue-700">{submitResult.percentage.toFixed(1)}%</div>
                                 <div className="text-slate-600 mt-2">Таны оноо: <strong>{submitResult.score}</strong></div>
@@ -639,19 +801,32 @@ export default function ExamPage() {
 
                 {/* FIX E1: Retake reason modal — student writes a custom reason */}
                 {showRetakeDialog && user && (
-                    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-                        <div className="bg-white rounded-2xl p-6 max-w-md w-full">
-                            <h3 className="text-lg font-bold mb-3">Дахин шалгалтын хүсэлт</h3>
+                    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                        <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl overflow-hidden">
+                            <div className="bg-linear-to-r from-blue-600 to-indigo-600 px-6 py-5">
+                                <h3 className="text-xl font-black text-white flex items-center gap-2">
+                                    <RotateCcw className="w-5 h-5" /> Дахин шалгалтын хүсэлт
+                                </h3>
+                                <p className="text-blue-100 text-sm mt-1">
+                                    Юу болсныг тодорхой бичвэл админ хурдан шийднэ
+                                </p>
+                            </div>
+                            <div className="p-6">
                             <textarea
                                 value={retakeReason}
                                 onChange={e => setRetakeReason(e.target.value)}
-                                placeholder="Шалтгаанаа дэлгэрэнгүй бичнэ үү..."
-                                className="w-full p-3 border rounded min-h-[100px]"
+                                placeholder="Жишээ: Интернэт тасарч, шалгалт дундуур хаагдсан..."
+                                className="w-full p-3 rounded-xl border-2 border-slate-200 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-50 min-h-[110px] resize-none"
                                 maxLength={500}
+                                autoFocus
                             />
-                            <div className="text-xs text-slate-500 mt-1">{retakeReason.length}/500</div>
-                            <div className="flex gap-2 mt-4">
-                                <button onClick={() => setShowRetakeDialog(false)} className="flex-1 p-2 border rounded">Болих</button>
+                            <div className={`text-xs mt-1.5 font-bold ${retakeReason.trim().length < 10 ? "text-amber-600" : "text-emerald-600"}`}>
+                                {retakeReason.trim().length < 10
+                                    ? `Дор хаяж 10 тэмдэгт бичнэ үү (${retakeReason.trim().length}/10)`
+                                    : `${retakeReason.length}/500 тэмдэгт`}
+                            </div>
+                            <div className="flex gap-2 mt-5">
+                                <button onClick={() => setShowRetakeDialog(false)} className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-slate-700 font-bold hover:bg-slate-50 transition-colors">Болих</button>
                                 <button
                                     onClick={async () => {
                                         if (retakeReason.trim().length < 10) {
@@ -674,10 +849,11 @@ export default function ExamPage() {
                                             toast.error(msg);
                                         }
                                     }}
-                                    className="flex-1 p-2 bg-blue-600 text-white rounded"
+                                    className="flex-1 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold transition-colors"
                                 >
                                     Илгээх
                                 </button>
+                            </div>
                             </div>
                         </div>
                     </div>
@@ -686,59 +862,121 @@ export default function ExamPage() {
         );
     }
 
-    if (!meta) return null;
-
-    // ─── Render: preloading screen ────────────────────────────────────────────
-    if (preloading) {
-        return (
-            <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-                <Card className="max-w-md w-full shadow-2xl overflow-hidden">
-                    <CardHeader className="bg-linear-to-r from-blue-600 to-indigo-600 text-white text-center p-8">
-                        <Loader2 className="w-12 h-12 animate-spin mx-auto mb-4" />
-                        <CardTitle className="text-2xl font-black">Шалгалт бэлтгэж байна...</CardTitle>
-                        <p className="text-blue-100 mt-2">Асуулт болон зургуудыг ачаалж байна</p>
-                    </CardHeader>
-                    <CardContent className="p-8 text-center space-y-6">
-                        <div className="text-7xl font-black text-blue-600">
-                            {preloadCountdown}
-                        </div>
-                        <p className="font-bold text-slate-500 uppercase tracking-widest text-sm">
-                            секунд хүлээнэ үү
-                        </p>
-                    </CardContent>
-                </Card>
+    /** Админаас ирсэн сануулга — дэлгэц дүүрэн, хаах товчтой. */
+    const nudgeOverlay = nudge ? (
+        <div className="fixed inset-0 z-[70] bg-amber-500/95 backdrop-blur-sm flex items-center justify-center p-6">
+            <div className="text-center text-white max-w-lg space-y-6">
+                <AlertTriangle className="w-20 h-20 mx-auto animate-bounce" />
+                <h2 className="text-4xl font-black">Багшаас сануулга!</h2>
+                <p className="text-xl font-medium text-amber-50">
+                    Та шалгалтад бэлэн болоогүй байна. <strong>«Бэлэн боллоо»</strong> товчийг
+                    даран багшийг хүлээнэ үү — эс бөгөөс шалгалт эхлэхэд орж чадахгүй.
+                </p>
+                <Button
+                    onClick={() => setNudge(false)}
+                    className="bg-white text-amber-700 hover:bg-amber-50 font-black h-12 px-8 rounded-xl text-lg"
+                >
+                    Ойлголоо
+                </Button>
             </div>
-        );
-    }
+        </div>
+    ) : null;
 
-    // ─── Render: intro screen ─────────────────────────────────────────────────
-    if (!started) {
-        const _now = getServerTimeValue();
-        const _examEndMs = meta.scheduledAt + meta.duration * 60_000;
-        const _entryDeadlineMs = meta.scheduledAt + 10 * 60_000;
-        
-        const isEnded = _now >= _examEndMs;
-        const isLate = _now > _entryDeadlineMs;
+    // ─── Render: хүлээх танхим ба танилцуулга (шалгалт эхлэхээс ӨМНӨ) ───────
+    // Энэ үед `meta` (асуултын API) хараахан ирээгүй — шалгалтын мэдээллийг
+    // `examInfo` (шууд сонсогч)-оос авна.
+    if (!started || !meta) {
+        const info = examInfo;
+        if (!info) {
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-gray-50">
+                    <Loader2 className="w-10 h-10 animate-spin text-blue-600" />
+                </div>
+            );
+        }
 
-        if (isEnded || isLate) {
+        // Шалгалт эхэлчихээд дууссан бол
+        if (examStartedAt && getServerTimeValue() > examStartedAt + info.duration * 60_000) {
             return (
                 <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
                     <Card className="max-w-md w-full shadow-2xl">
                         <CardHeader className="bg-red-600 text-white rounded-t-xl p-8 text-center">
                             <AlertTriangle className="w-12 h-12 mx-auto mb-4" />
-                            <CardTitle className="text-2xl font-black">
-                                {isEnded ? "Хугацаа дууссан" : "Шалгалтаас хоцорсон байна"}
-                            </CardTitle>
+                            <CardTitle className="text-2xl font-black">Хугацаа дууссан</CardTitle>
                         </CardHeader>
                         <CardContent className="p-8 text-center space-y-6">
-                            <p className="text-slate-600 font-medium">
-                                {isEnded 
-                                    ? "Энэхүү шалгалтын хугацаа дууссан байна." 
-                                    : "Шалгалт эхэлснээс хойш 10 минут өнгөрсөн тул орох боломжгүй."}
+                            <p className="text-slate-600 font-medium">Энэхүү шалгалтын хугацаа дууссан байна.</p>
+                            <Button onClick={() => router.push("/student")} className="w-full bg-slate-800 text-white h-12 rounded-xl">Буцах</Button>
+                        </CardContent>
+                    </Card>
+                </div>
+            );
+        }
+
+        // ── Бэлэн болсон → ХҮЛЭЭХ ТАНХИМ ───────────────────────────────────
+        if (isReady) {
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-linear-to-br from-blue-600 via-indigo-600 to-purple-700 p-4">
+                    {nudgeOverlay}
+                    <div className="w-full max-w-lg text-center text-white space-y-8">
+                        <div className="w-24 h-24 rounded-full bg-white/15 backdrop-blur flex items-center justify-center mx-auto ring-4 ring-white/25">
+                            <CheckCircle className="w-12 h-12 text-emerald-300" />
+                        </div>
+                        <div>
+                            <h1 className="text-4xl font-black">Бэлэн боллоо!</h1>
+                            <p className="text-blue-100 text-lg mt-3">
+                                Багш шалгалтыг эхлүүлэхийг хүлээж байна…
                             </p>
-                            <Button onClick={() => router.push("/student")} className="w-full bg-slate-800 text-white h-12 rounded-xl">
-                                Буцах
+                        </div>
+
+                        <div className="bg-white/12 backdrop-blur rounded-3xl p-6 space-y-3 text-left">
+                            <div className="flex justify-between border-b border-white/20 pb-2">
+                                <span className="text-blue-100">Шалгалт</span>
+                                <span className="font-bold">{info.title}</span>
+                            </div>
+                            <div className="flex justify-between border-b border-white/20 pb-2">
+                                <span className="text-blue-100">Үргэлжлэх</span>
+                                <span className="font-bold">{info.duration} минут</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-blue-100">Таны нэр</span>
+                                <span className="font-bold">{profile ? `${profile.lastName} ${profile.firstName}` : ""}</span>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center justify-center gap-3 text-blue-100">
+                            <Loader2 className="w-5 h-5 animate-spin" />
+                            <span className="font-bold">Эхлэхэд шалгалт автоматаар нээгдэнэ — хуудсаа хаахгүй байна уу</span>
+                        </div>
+
+                        {!isFullscreen && (
+                            <Button onClick={handleReenterFullscreen} className="bg-white text-indigo-700 hover:bg-blue-50 font-bold gap-2">
+                                <Maximize className="w-4 h-4" /> Бүтэн дэлгэц рүү шилжих
                             </Button>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // ── Бэлэн болоогүй → танилцуулга + дүрэм ───────────────────────────
+        if (examStartedAt) {
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+                    <Card className="max-w-md w-full shadow-2xl">
+                        <CardHeader className="bg-amber-500 text-white rounded-t-xl p-8 text-center">
+                            <AlertTriangle className="w-12 h-12 mx-auto mb-4" />
+                            <CardTitle className="text-2xl font-black">Шалгалт эхэлчихсэн байна</CardTitle>
+                        </CardHeader>
+                        <CardContent className="p-8 text-center space-y-5">
+                            <p className="text-slate-600 font-medium">
+                                Та «Бэлэн боллоо» товчийг дарж амжаагүй тул шалгалт руу орох боломжгүй.
+                                Багш/админд хандаж оруулах хүсэлт тавина уу.
+                            </p>
+                            <Button onClick={() => window.location.reload()} className="w-full bg-blue-600 text-white h-12 rounded-xl">
+                                Дахин шалгах
+                            </Button>
+                            <Button onClick={() => router.push("/student")} variant="outline" className="w-full h-12 rounded-xl">Буцах</Button>
                         </CardContent>
                     </Card>
                 </div>
@@ -747,30 +985,26 @@ export default function ExamPage() {
 
         return (
             <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+                {nudgeOverlay}
                 <Card className="max-w-lg w-full shadow-2xl">
                     <CardHeader className="bg-linear-to-r from-blue-600 to-indigo-600 text-white rounded-t-xl p-8">
-                        <CardTitle className="text-2xl font-black">{meta.title}</CardTitle>
-                        <p className="text-blue-100 mt-1">{meta.grade}-р анги</p>
+                        <CardTitle className="text-2xl font-black">{info.title}</CardTitle>
+                        <p className="text-blue-100 mt-1">{info.grade}-р анги</p>
                     </CardHeader>
                     <CardContent className="p-8 space-y-6">
-                        <div className={`grid ${meta.passingScore && meta.passingScore > 0 ? "grid-cols-3" : "grid-cols-2"} gap-4`}>
+                        <div className="grid grid-cols-2 gap-4">
                             <div className="bg-slate-50 rounded-2xl p-4 text-center">
                                 <Clock className="w-6 h-6 text-blue-600 mx-auto mb-2" />
-                                <div className="text-2xl font-black text-slate-800">{meta.duration}</div>
+                                <div className="text-2xl font-black text-slate-800">{info.duration}</div>
                                 <div className="text-xs text-slate-500 font-bold uppercase tracking-wider">Минут</div>
                             </div>
                             <div className="bg-slate-50 rounded-2xl p-4 text-center">
                                 <CheckCircle className="w-6 h-6 text-emerald-600 mx-auto mb-2" />
-                                <div className="text-2xl font-black text-slate-800">{questions.length}</div>
-                                <div className="text-xs text-slate-500 font-bold uppercase tracking-wider">Асуулт</div>
-                            </div>
-                            {meta.passingScore && meta.passingScore > 0 && (
-                                <div className="bg-slate-50 rounded-2xl p-4 text-center">
-                                    <CheckCircle className="w-6 h-6 text-purple-600 mx-auto mb-2" />
-                                    <div className="text-2xl font-black text-slate-800">{meta.passingScore}%</div>
-                                    <div className="text-xs text-slate-500 font-bold uppercase tracking-wider">Тэнцэх босго</div>
+                                <div className="text-2xl font-black text-slate-800">
+                                    {info.scheduledAt ? new Date(info.scheduledAt).toLocaleTimeString("mn-MN",{hour:"2-digit",minute:"2-digit"}) : "—"}
                                 </div>
-                            )}
+                                <div className="text-xs text-slate-500 font-bold uppercase tracking-wider">Товлосон цаг</div>
+                            </div>
                         </div>
 
                         <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-2">
@@ -778,36 +1012,27 @@ export default function ExamPage() {
                                 <AlertTriangle className="w-4 h-4" /> Анхааруулга
                             </p>
                             <ul className="text-sm text-amber-700 space-y-1 list-disc list-inside">
+                                <li><strong>«Бэлэн боллоо»</strong> дарсны дараа бүтэн дэлгэц болж, багш эхлүүлэхийг хүлээнэ</li>
+                                <li>Багш эхлүүлэхэд <strong>бүх сурагчид зэрэг</strong> шалгалт эхэлнэ</li>
+                                <li>Эхэлсний дараа бэлэн болоогүй хүн <strong>орох боломжгүй</strong></li>
                                 <li>Шалгалт эхэлсэний дараа <strong>{MAX_VIOLATIONS} удаа</strong> өөр цонх/таб нээвэл автоматаар дуусаж илгээгдэнэ</li>
-                                <li>Шалгалтын үед хуулах (Ctrl+C / Ctrl+V), хэвлэх (Ctrl+P) хориглоно</li>
-                                <li>Хөгжүүлэгчийн хэрэгсэл (F12, Ctrl+Shift+I/J/C, Ctrl+U) нээх хориглоно</li>
-                                <li>Хулганы баруун товч (right-click) ажиллахгүй</li>
+                                <li>Хуулах (Ctrl+C / Ctrl+V), хэвлэх (Ctrl+P), хөгжүүлэгчийн хэрэгсэл хориглоно</li>
                                 <li>Хугацаа дуусахад хариулт автоматаар илгээгдэнэ</li>
-                                <li>Хариултууд <strong>60 секунд</strong> тутамд автоматаар хадгалагдана (мөн орхих үед)</li>
-                                <li>Сүлжээ тасарвал систем <strong>3 удаа</strong> дахин илгээх оролдлого хийнэ</li>
-                                <li>Илгээсний дараа хариултаа засах боломжгүй</li>
-                                <li>Шалгалтын цаг сервертэй синхрончлогдож байгаа тул компьютерийн цаг өөрчилснөөр хугацаа уртасахгүй</li>
-                                <li>Шударга байдлын зөрчил гарвал шалгалтын дүн хүчингүй болж болзошгүй</li>
+                                <li>Хариултууд <strong>60 секунд</strong> тутамд автоматаар хадгалагдана</li>
+                                <li>Шалгалтын цаг сервер дээрээс тоологдоно</li>
                             </ul>
                             <label className="flex items-start gap-2 mt-3 cursor-pointer">
-                                <input
-                                    type="checkbox"
-                                    checked={acknowledgedRules}
-                                    onChange={e => setAcknowledgedRules(e.target.checked)}
-                                    className="mt-1"
-                                />
-                                <span className="text-sm text-amber-800 font-medium">
-                                    Дээрх дүрмийг уншиж танилцсан, хүлээн зөвшөөрч байна
-                                </span>
+                                <input type="checkbox" checked={acknowledgedRules} onChange={e => setAcknowledgedRules(e.target.checked)} className="mt-1" />
+                                <span className="text-sm text-amber-800 font-medium">Дээрх дүрмийг уншиж танилцсан, хүлээн зөвшөөрч байна</span>
                             </label>
                         </div>
 
                         <Button
-                            onClick={handleStart}
-                            disabled={!acknowledgedRules}
-                            className={`w-full h-14 bg-linear-to-r from-blue-600 to-indigo-600 text-white font-black text-lg rounded-2xl shadow-xl ${!acknowledgedRules ? "opacity-50 cursor-not-allowed" : ""}`}
+                            onClick={handleReady}
+                            disabled={!acknowledgedRules || readySubmitting}
+                            className={`w-full h-14 bg-linear-to-r from-emerald-600 to-green-600 text-white font-black text-lg rounded-2xl shadow-xl ${(!acknowledgedRules || readySubmitting) ? "opacity-50 cursor-not-allowed" : ""}`}
                         >
-                            Шалгалт эхлэх
+                            {readySubmitting ? "Бүртгэж байна..." : "Бэлэн боллоо"}
                         </Button>
                     </CardContent>
                 </Card>
@@ -820,6 +1045,44 @@ export default function ExamPage() {
 
     return (
         <div className="min-h-screen bg-gray-50 select-none" onCopy={e => e.preventDefault()} onPaste={e => e.preventDefault()}>
+            {nudgeOverlay}
+            {/* Бүтэн дэлгэцээс гарсан үеийн анхааруулах самбар.
+                ⚠️ Энэ нь дүрэм зөрчилд ТООЦОГДОХГҮЙ — зөвхөн анхааруулга.
+                Fullscreen-ийг дахин асаахад хэрэглэгчийн товшилт заавал хэрэгтэй тул
+                автоматаар биш, товчоор буцаана. */}
+            {showFullscreenPrompt && (
+                <div role="alertdialog" aria-modal="true" className="fixed inset-0 z-[60] bg-indigo-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+                    <Card className="max-w-md w-full border-0 rounded-3xl overflow-hidden shadow-2xl">
+                        <CardHeader className="bg-linear-to-r from-amber-500 to-orange-600 text-white p-7 text-center">
+                            <Maximize className="w-12 h-12 mx-auto mb-3" />
+                            <CardTitle className="text-2xl font-black">Бүтэн дэлгэцээс гарлаа</CardTitle>
+                        </CardHeader>
+                        <CardContent className="p-7 text-center space-y-5">
+                            <p className="text-slate-700 font-medium">
+                                Шалгалтыг <strong className="text-orange-600">бүтэн дэлгэц</strong> дээр өгөх ёстой.
+                                Хугацаа үргэлжилсээр байгаа тул доорх товчийг дарж шууд буцна уу.
+                            </p>
+                            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3 text-sm text-emerald-800 font-semibold">
+                                ✓ Таны хариултууд хадгалагдсан хэвээр байна — энэ нь дүрэм зөрчилд тооцогдохгүй.
+                            </div>
+                            <Button
+                                onClick={handleReenterFullscreen}
+                                className="w-full h-14 bg-linear-to-r from-blue-600 to-indigo-600 text-white font-black text-lg rounded-2xl shadow-xl gap-2"
+                            >
+                                <Maximize className="w-5 h-5" />
+                                Бүтэн дэлгэц рүү буцах
+                            </Button>
+                            <button
+                                onClick={() => setShowFullscreenPrompt(false)}
+                                className="text-xs font-bold text-slate-500 hover:text-indigo-600 underline"
+                            >
+                                Одоохондоо үргэлжлүүлэх
+                            </button>
+                        </CardContent>
+                    </Card>
+                </div>
+            )}
+
             {/* Violation warning banner */}
             {showViolationWarning && (
                 <div role="alert" className="fixed top-0 inset-x-0 z-50 bg-red-600 text-white text-center py-3 font-bold animate-bounce">
@@ -847,16 +1110,20 @@ export default function ExamPage() {
                         {formatTime(timeLeft)}
                     </div>
 
+                    {/* Бүтэн дэлгэц рүү шилжих товч — зөвхөн бүтэн дэлгэц идэвхгүй үед */}
+                    {!isFullscreen && (
+                        <Button
+                            onClick={handleReenterFullscreen}
+                            title="Бүтэн дэлгэц рүү шилжих"
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold gap-2 shrink-0"
+                        >
+                            <Maximize className="w-4 h-4" />
+                            <span className="hidden sm:inline">Бүтэн дэлгэц</span>
+                        </Button>
+                    )}
+
                     <Button
-                        onClick={() => {
-                            const unansweredCount = questions.length - answeredCount;
-                            const msg = unansweredCount > 0 
-                                ? `${unansweredCount} асуулт хариулаагүй байна. Шалгалтаа илгээх үү?`
-                                : `Та бүх асуултандаа хариулсан байна. Шалгалтаа илгээхдээ итгэлтэй байна уу?`;
-                            if (window.confirm(msg)) {
-                                handleSubmit();
-                            }
-                        }}
+                        onClick={confirmAndSubmit}
                         disabled={submitting || isOfflineRetrying}
                         className={`${isOfflineRetrying ? "bg-amber-600 hover:bg-amber-700" : "bg-emerald-600 hover:bg-emerald-700"} text-white font-bold gap-2 shrink-0`}
                     >
@@ -1011,13 +1278,38 @@ export default function ExamPage() {
                                                     💡 Санамж: Дээрх асуултын агуулга дахь хоосон зайд тохирох зөв хариултаа доорх нүдэнд бичнэ үү.
                                                 </div>
                                             )}
-                                            <textarea
-                                                className="w-full border-2 border-slate-200 rounded-2xl p-4 text-slate-800 font-medium focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-50 transition-all resize-none text-lg"
-                                                rows={currentQ.type === "fill_in_blank" ? 2 : 4}
-                                                placeholder={currentQ.type === "fill_in_blank" ? "Хоосон зайд нөхөх үгээ энд бичнэ үү..." : "Хариултаа энд бичнэ үү..."}
-                                                value={answers[currentQ.id] || ""}
-                                                onChange={e => setAnswers(prev => ({ ...prev, [currentQ.id]: e.target.value }))}
-                                            />
+                                            {isNumericAnswer(currentQ) ? (
+                                                /* Тоон хариулт — зөвхөн тоо оруулна. Гар утас/таблет дээр
+                                                   тоон гар автоматаар нээгдэнэ (inputMode="decimal"). */
+                                                <div className="space-y-2">
+                                                    <input
+                                                        type="text"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        className="w-full border-2 border-blue-200 bg-blue-50/40 rounded-2xl p-4 text-slate-900 font-black text-2xl tracking-wide text-center focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-blue-100 transition-all"
+                                                        placeholder={currentQ.answerFormat === "fraction" ? "жишээ: 5/6" : "жишээ: 12.5"}
+                                                        value={answers[currentQ.id] || ""}
+                                                        onChange={e => {
+                                                            // Зөвхөн цифр, тэмдэг, аравтын таслал, бутархайн зураас
+                                                            const onlyNumeric = e.target.value.replace(/[^\d.,/-]/g, "");
+                                                            setAnswers(prev => ({ ...prev, [currentQ.id]: onlyNumeric }));
+                                                        }}
+                                                    />
+                                                    <p className="text-xs font-bold text-blue-700 text-center">
+                                                        {currentQ.answerFormat === "fraction"
+                                                            ? "Зөвхөн тоо бичнэ — бутархайг 5/6 хэлбэрээр (аравтаар бичсэн ч болно)"
+                                                            : "Зөвхөн тоо бичнэ — нэгж (см, км) бичих шаардлагагүй"}
+                                                    </p>
+                                                </div>
+                                            ) : (
+                                                <textarea
+                                                    className="w-full border-2 border-slate-200 rounded-2xl p-4 text-slate-800 font-medium focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-50 transition-all resize-none text-lg"
+                                                    rows={currentQ.type === "fill_in_blank" ? 2 : 4}
+                                                    placeholder={currentQ.type === "fill_in_blank" ? "Хоосон зайд нөхөх үгээ энд бичнэ үү..." : "Хариултаа энд бичнэ үү..."}
+                                                    value={answers[currentQ.id] || ""}
+                                                    onChange={e => setAnswers(prev => ({ ...prev, [currentQ.id]: e.target.value }))}
+                                                />
+                                            )}
                                         </div>
                                     )}
 
@@ -1053,15 +1345,7 @@ export default function ExamPage() {
                                             </Button>
                                         ) : (
                                             <Button
-                                                onClick={() => {
-                                                    const unansweredCount = questions.length - answeredCount;
-                                                    const msg = unansweredCount > 0 
-                                                        ? `${unansweredCount} асуулт хариулаагүй байна. Шалгалтаа илгээх үү?`
-                                                        : `Та бүх асуултандаа хариулсан байна. Шалгалтаа илгээхдээ итгэлтэй байна уу?`;
-                                                    if (window.confirm(msg)) {
-                                                        handleSubmit();
-                                                    }
-                                                }}
+                                                onClick={confirmAndSubmit}
                                                 className={`gap-2 text-white ${isOfflineRetrying ? "bg-amber-600 hover:bg-amber-700" : "bg-emerald-600 hover:bg-emerald-700"}`}
                                                 disabled={submitting || isOfflineRetrying}
                                             >
@@ -1089,13 +1373,13 @@ export default function ExamPage() {
             {/* FIX 16: Question report modal — replaces window.prompt */}
             {reportingQuestionId && user && (
                 <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl p-6 max-w-md w-full">
-                        <h3 className="text-lg font-bold mb-3">Асуултын талаар санал илгээх</h3>
+                    <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
+                        <h3 className="text-lg font-black mb-3 text-slate-900">Асуултын талаар санал илгээх</h3>
                         <textarea
                             value={reportReason}
                             onChange={e => setReportReason(e.target.value.slice(0, 300))}
                             placeholder="Юу буруу/тодорхойгүй байгааг бичнэ үү (10-300 тэмдэгт)..."
-                            className="w-full p-3 border rounded min-h-[100px]"
+                            className="w-full p-3 rounded-xl border-2 border-slate-200 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none min-h-[100px] resize-none"
                             maxLength={300}
                         />
                         <div className="text-xs text-slate-500 mt-1">{reportReason.length}/300</div>
@@ -1103,7 +1387,7 @@ export default function ExamPage() {
                             <button
                                 onClick={() => setReportingQuestionId(null)}
                                 disabled={reportSubmitting}
-                                className="flex-1 p-2 border rounded"
+                                className="flex-1 py-2.5 rounded-xl border-2 border-slate-200 text-slate-700 font-bold hover:bg-slate-50"
                             >
                                 Болих
                             </button>

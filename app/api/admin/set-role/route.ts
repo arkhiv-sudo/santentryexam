@@ -3,7 +3,7 @@ import { adminAuth } from "@/lib/firebase-admin";
 import { checkOrigin } from "@/lib/csrf";
 import { logAdmin, getRequestMeta } from "@/lib/audit-log";
 
-const VALID_ROLES = ['admin', 'teacher', 'student', 'parent'] as const;
+const VALID_ROLES = ['admin', 'teacher', 'student'] as const;
 type ValidRole = typeof VALID_ROLES[number];
 
 export async function POST(request: NextRequest) {

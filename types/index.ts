@@ -1,9 +1,8 @@
-export type UserRole = 'admin' | 'teacher' | 'student' | 'parent';
+export type UserRole = 'admin' | 'teacher' | 'student';
 
 export interface UserProfile {
     uid: string;
     email: string;
-    parentEmail?: string;
     role: UserRole;
     firstName: string;
     lastName: string;
@@ -13,13 +12,11 @@ export interface UserProfile {
     grade?: string; // numeric grade string, e.g. '12' from '12А'
     aimag?: string;
     soum?: string;
-    children?: string[]; // UIDs of children (for parents)
     // Guardian fields
     phone?: string;
     emergencyPhone?: string;
     // Student identity
     nationalId?: string;     // РД (Регистрийн дугаар)
-    parentId?: string;       // UID of the parent who registered this student
     // NOTE: tempPassword is ONLY returned in API responses for the initial credential display.
     // It is NEVER stored in Firestore. Do not write this field to the users collection.
     tempPassword?: string;
@@ -27,13 +24,23 @@ export interface UserProfile {
      *  Cleared after a successful password change. */
     mustChangePassword?: boolean;
     status?: "active" | "archived";
+    /** Short login code for the phone+code exam entry flow (/s).
+     *  Generated server-side on Excel import; visible to admins only. */
+    examCode?: string;
+    /** True for accounts created through the admin Excel import. */
+    isImported?: boolean;
+    importedAt?: import("firebase/firestore").Timestamp | Date | string;
+    codeUpdatedAt?: import("firebase/firestore").Timestamp | Date | string;
 }
 
 export interface Exam {
     id: string;
     title: string;
-    scheduledAt: Date;
-    registrationEndDate: Date;
+    /** УСТСАН ОЙЛГОЛТ: шалгалт огноогоор биш, админ «Бүгдэд эхлүүлэх» дарснаар
+     *  эхэлдэг болсон. Эдгээр талбарууд зөвхөн ХУУЧИН шалгалтуудад л байж болно. */
+    scheduledAt?: Date | null;
+    registrationEndDate?: Date | null;
+    createdAt?: Date | null;
     duration: number; // minutes
     grade: string; // '1' – '12'
     maxQuestions: number;
@@ -49,6 +56,11 @@ export interface Exam {
     maxAttempts?: number;
     /** 'live' = graded & persisted, 'practice' = self-study (no submission/result is stored). */
     examMode?: 'live' | 'practice';
+    /** Админ «Бүгдэд эхлүүлэх» дарсан мөч. Энэ талбар тавигдсан үед л шалгалт
+     *  бодитоор эхэлнэ — цаг мөн эндээс тоологдоно. `scheduledAt` нь зөвхөн
+     *  ТОВЛОСОН цаг (сурагч хэдэн цагт ирэхээ мэдэх). */
+    startedAt?: Date | null;
+    startedBy?: string | null;
 }
 
 export type QuestionType = 'multiple_choice' | 'fill_in_blank' | 'input'; // 'input' kept for backwards compat
@@ -119,13 +131,19 @@ export interface ExamQuestion {
     extraImageUrls?: string[]; // Нэмэлт зургууд
     points: number;
     subject?: string;
+    /** Хариултын ТӨРӨЛ (утга нь БИШ) — сервер тал хариултын түлхүүрээс тооцож
+     *  дамжуулна. Клиент үүнийг ашиглан тоон хариултад зөвхөн тоо оруулдаг
+     *  талбар харуулна. Зөв хариу энд ямар ч байдлаар задрахгүй. */
+    answerFormat?: 'number' | 'fraction' | 'text';
 }
 
 export interface Registration {
     id: string;
     studentId: string;
     examId: string;
-    status: 'registered' | 'started' | 'completed';
+    /** registered = орж ирсэн · ready = «Бэлэн боллоо» дарсан (хүлээх танхимд)
+     *  · started = шалгалт эхэлсэн · completed = илгээсэн */
+    status: 'registered' | 'ready' | 'started' | 'completed';
     registeredAt: Date;
     startedAt?: Date;
     completedAt?: Date;
@@ -134,6 +152,15 @@ export interface Registration {
     extendedTime?: number; // seconds
     forceSubmitted?: boolean;
     ipAddress?: string;
+    /** Админ дахин өгөхийг зөвшөөрсөн мөч. Байвал хоцролтын хаалт үйлчлэхгүй. */
+    retakeApprovedAt?: import("firebase/firestore").Timestamp | Date | string;
+    /** Сурагч «Бэлэн боллоо» дарсан мөч. */
+    readyAt?: import("firebase/firestore").Timestamp | Date | string;
+    /** Админ сануулга илгээсэн мөч — сурагчийн дэлгэцэнд анхааруулга гаргана. */
+    nudgedAt?: import("firebase/firestore").Timestamp | Date | string;
+    nudgeCount?: number;
+    /** Шалгалт эхэлсний дараа админ тусгайлан оруулсан эсэх. */
+    admittedLate?: boolean;
 }
 
 export interface Submission {
@@ -150,6 +177,11 @@ export interface Submission {
     gradedAt?: Date;
     timeTaken?: number; // seconds
     gradedAnswers?: Record<string, GradedAnswer>;
+    /** Дүрэм зөрчсөний улмаас (цонх солилт MAX_VIOLATIONS хүрсэн) дүнг нь
+     *  эргэлзээтэй гэж тэмдэглэсэн. Хариулт нь хадгалагдсан хэвээр — админ
+     *  эцсийн шийдвэрийг гаргана. */
+    invalidatedByViolation?: boolean;
+    violations?: number;
 }
 
 export interface GradedAnswer {
@@ -175,6 +207,11 @@ export interface ExamResult {
     passed?: boolean;          // Тэнцсэн эсэх
     totalParticipants?: number;
     passingScore?: number;
+    timeTaken?: number;        // секунд — submit route бичдэг
+    /** Дүрэм зөрчсөний улмаас эргэлзээтэй гэж тэмдэглэгдсэн дүн.
+     *  Эрэмбэлэлтэд ороогүй (rank = null). */
+    invalidatedByViolation?: boolean;
+    violations?: number;
 }
 
 export interface Correction {
@@ -193,7 +230,7 @@ export interface Correction {
 export interface Notification {
     id: string;
     type: 'exam_started' | 'exam_completed' | 'score_available' | 'correction_submitted' | 'correction_approved' | 'correction_rejected';
-    recipientId: string; // parent uid
+    recipientId: string;
     studentId: string;
     studentName: string;
     examId: string;

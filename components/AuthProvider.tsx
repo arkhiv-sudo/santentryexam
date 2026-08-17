@@ -57,13 +57,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                             lastName: data.lastName || "",
                             firstName: data.firstName || "",
                             role: role,
-                            parentEmail: data.parentEmail,
                             studentCode: data.studentCode,
                             aimag: data.aimag,
                             soum: data.soum,
                             school: data.school,
                             class: data.class,
-                            children: data.children,
                             mustChangePassword: data.mustChangePassword,
                         });
                     } else {

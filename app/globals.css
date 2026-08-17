@@ -1,15 +1,16 @@
 @import "tailwindcss";
 
+/* Энэ апп зөвхөн ЦАЙВАР загвартай (бүх хуудас bg-white / bg-slate-50).
+ *
+ * Өмнө нь энд `prefers-color-scheme: dark` үед --foreground нь #ededed
+ * (бараг цагаан) болдог байсан. Үүнээс болж хэрэглэгчийн төхөөрөмж харанхуй
+ * горимд байхад тодорхой өнгө заагаагүй бүх текст (модалын гарчиг, textarea-д
+ * бичсэн текст, энгийн товчны бичиг г.м.) цагаан фон дээр ҮЛ ҮЗЭГДЭХ болж
+ * байв. Тиймээс өнгийг тогтмол цайвар горимд түгжив. */
 :root {
   --background: #ffffff;
   --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  color-scheme: light;
 }
 
 body {

@@ -117,7 +117,7 @@ export default function TeacherExamsPage() {
                                         <div className="flex flex-col gap-2.5">
                                             <div className="flex items-center text-slate-500 text-sm gap-2">
                                                 <Calendar className="w-4 h-4 text-slate-400" />
-                                                {new Date(exam.scheduledAt).toLocaleDateString()}
+                                                {exam.startedAt ? new Date(exam.startedAt).toLocaleDateString("mn-MN") : exam.createdAt ? new Date(exam.createdAt).toLocaleDateString("mn-MN") : "—"}
                                             </div>
                                             <div className="flex items-center text-slate-500 text-sm gap-2">
                                                 <Clock className="w-4 h-4 text-slate-400" />

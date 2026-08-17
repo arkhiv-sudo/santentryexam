@@ -2,15 +2,19 @@
 
 import { useAuth } from "@/components/AuthProvider";
 import { Button } from "@/components/ui/Button";
+import { Logo } from "@/components/ui/Logo";
 import { auth } from "@/lib/firebase";
 import { signOut } from "firebase/auth";
 import Link from "next/link";
-import { ChevronDown, Users, FileQuestion, ClipboardList, BookOpen, MessageSquare } from "lucide-react";
+import { ChevronDown, Users, FileQuestion, ClipboardList, BookOpen, MessageSquare, GraduationCap, Trophy, BellRing, Headset } from "lucide-react";
+import { useAdminInbox } from "@/hooks/useAdminInbox";
 import { useState } from "react";
 
 export default function Header() {
     const { profile } = useAuth();
     const [menuOpen, setMenuOpen] = useState(false);
+    // Хүлээгдэж буй хүсэлтийн тоо — зөвхөн админд сонсогч үүсгэнэ.
+    const { total: pendingCount } = useAdminInbox(profile?.role === "admin");
 
     const handleLogout = async () => {
         try {
@@ -34,8 +38,7 @@ export default function Header() {
     const roleLabels: Record<string, string> = {
         admin: "Админ",
         teacher: "Багш",
-        student: "Сурагч",
-        parent: "Эцэг эх"
+        student: "Сурагч"
     };
 
     // Role-based menu items
@@ -43,9 +46,12 @@ export default function Header() {
         if (profile?.role === 'admin') {
             return [
                 { label: "Хянах самбар", href: "/admin", icon: ClipboardList },
+                { label: "Сурагчид", href: "/admin/students", icon: GraduationCap },
                 { label: "Хэрэглэгчид", href: "/admin/users", icon: Users },
                 { label: "Асуултын сан", href: "/admin/questions", icon: FileQuestion },
                 { label: "Шалгалтууд", href: "/admin/exams", icon: BookOpen },
+                { label: "Дүн", href: "/admin/results", icon: Trophy },
+                { label: "Тусламж", href: "/admin/support", icon: Headset },
                 { label: "Сэдвүүд", href: "/admin/settings/subjects", icon: BookOpen },
             ];
         }
@@ -64,11 +70,6 @@ export default function Header() {
                 { label: "Миний шалгалтууд", href: "/student/exams", icon: BookOpen },
             ];
         }
-        if (profile?.role === 'parent') {
-            return [
-                { label: "Хянах самбар", href: "/parent", icon: ClipboardList },
-            ];
-        }
         return [];
     };
 
@@ -79,7 +80,8 @@ export default function Header() {
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div className="flex justify-between h-16">
                     <div className="flex items-center gap-6">
-                        <Link href="/" className="text-xl font-bold text-slate-900 hover:text-blue-600 transition-colors">
+                        <Link href="/" className="flex items-center gap-2.5 text-xl font-bold text-slate-900 hover:text-blue-600 transition-colors">
+                            <Logo size={34} />
                             Шалгалтын систем
                         </Link>
 
@@ -130,6 +132,16 @@ export default function Header() {
                     </div>
 
                     <div className="flex items-center gap-4">
+                        {profile?.role === "admin" && pendingCount > 0 && (
+                            <Link
+                                href="/admin"
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 font-bold text-sm hover:bg-amber-200 transition-colors animate-pulse"
+                                title="Хүлээгдэж буй хүсэлт"
+                            >
+                                <BellRing className="w-4 h-4" />
+                                {pendingCount}
+                            </Link>
+                        )}
                         {profile && (
                             <div className="hidden sm:flex items-center gap-2">
                                 <span className="text-sm font-medium text-slate-600">

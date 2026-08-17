@@ -101,8 +101,7 @@ export default function AdminUsersPage() {
     const roleLabels: Record<UserRole, string> = {
         admin: "Админ",
         teacher: "Багш",
-        student: "Сурагч",
-        parent: "Эцэг эх"
+        student: "Сурагч"
     };
 
     if (authLoading || loading) return <div className="p-8 text-center">Уншиж байна...</div>;
@@ -115,9 +114,8 @@ export default function AdminUsersPage() {
                     <h1 className="text-xl font-bold tracking-tight text-slate-900">Хэрэглэгчийн удирдлага</h1>
                     <p className="text-slate-500 mt-1 text-sm">Бүх хэрэглэгчдийг харах, засах, эрх өөрчлөх</p>
                 </div>
-                {/* FIX 46: CSV bulk import placeholder. Full implementation requires papaparse. */}
-                <Button variant="outline" onClick={() => toast.info('CSV импорт удахгүй нэмэгдэнэ')}>
-                    CSV-ээс импортлох
+                <Button variant="outline" onClick={() => router.push('/admin/students')}>
+                    Excel-ээс сурагч импортлох
                 </Button>
             </div>
 
@@ -167,7 +165,6 @@ export default function AdminUsersPage() {
                                             >
                                                 <option value="student">Сурагч</option>
                                                 <option value="teacher">Багш</option>
-                                                <option value="parent">Эцэг эх</option>
                                                 <option value="admin">Админ</option>
                                             </Select>
                                             

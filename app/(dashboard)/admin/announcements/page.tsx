@@ -159,7 +159,7 @@ export default function AdminAnnouncementsPage() {
                         <Megaphone className="w-6 h-6 text-blue-600" />
                         Мэдэгдлийн удирдлага
                     </h1>
-                    <p className="text-sm text-slate-500">Эцэг эхчүүдэд зориулсан нийтлэг мэдэгдэл, мэдээлэл оруулах</p>
+                    <p className="text-sm text-slate-500">Сурагч, багш нарт харагдах нийтлэг мэдэгдэл, мэдээлэл оруулах</p>
                 </div>
                 {!isFormOpen && (
                     <Button onClick={handleOpenCreate} className="bg-blue-600 hover:bg-blue-700 text-white gap-2">

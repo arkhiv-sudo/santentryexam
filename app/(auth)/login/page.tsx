@@ -40,7 +40,6 @@ export default function LoginPage() {
 
             if (role === "admin") router.push("/admin");
             else if (role === "teacher") router.push("/teacher");
-            else if (role === "parent") router.push("/parent");
             else router.push("/student");
         } catch (error) {
             throw error; // Let the caller handle it
@@ -134,11 +133,8 @@ export default function LoginPage() {
                     </Button>
                 </form>
             </CardContent>
-            <div className="p-8 pt-0 text-center text-sm text-slate-500 bg-slate-50/30 border-t border-slate-50">
-                Бүртгэлгүй юу?{" "}
-                <Link href="/signup" className="font-bold text-blue-600 underline underline-offset-4 hover:text-blue-700 transition-colors">
-                    Бүртгүүлэх
-                </Link>
+            <div className="p-6 pt-0 text-center text-sm text-slate-500 bg-slate-50/30 border-t border-slate-50">
+                Сурагч уу? <Link href="/s" className="font-bold text-blue-600 underline underline-offset-4 hover:text-blue-700 transition-colors">Утас, кодоороо шалгалт өгөх</Link>
             </div>
         </Card>
         </div>

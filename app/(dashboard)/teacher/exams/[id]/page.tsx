@@ -84,7 +84,7 @@ export default function TeacherExamDetailPage() {
                                 {exam.grade}-р анги
                             </span>
                             <span className="bg-slate-100 text-slate-600 px-3 py-1 rounded-full text-xs font-semibold">
-                                {new Date(exam.scheduledAt).toLocaleDateString()}
+                                {exam.startedAt ? new Date(exam.startedAt).toLocaleDateString("mn-MN") : exam.createdAt ? new Date(exam.createdAt).toLocaleDateString("mn-MN") : "—"}
                             </span>
                         </div>
                         <h1 className="text-3xl font-bold text-slate-900">{exam.title}</h1>

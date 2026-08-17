@@ -36,8 +36,7 @@ export default function EditExamPage() {
 
     const [formData, setFormData] = useState({
         title: "",
-        scheduledAt: "",
-        registrationEndDate: "",
+
         duration: "60",
         grade: "",
         maxQuestions: "30",
@@ -79,8 +78,7 @@ export default function EditExamPage() {
 
             setFormData({
                 title: exam.title,
-                scheduledAt: formatDate(exam.scheduledAt),
-                registrationEndDate: formatDate(exam.registrationEndDate),
+
                 duration: exam.duration.toString(),
                 grade: exam.grade,
                 maxQuestions: exam.maxQuestions.toString(),
@@ -116,18 +114,11 @@ export default function EditExamPage() {
     };
 
     const handleNextStep = async () => {
-        if (!formData.title || !formData.scheduledAt || !formData.registrationEndDate || !formData.grade) {
-            toast.error("Бүх талбарыг бөглөнө үү");
+        if (!formData.title || !formData.grade) {
+            toast.error("Шалгалтын нэр болон ангийг бөглөнө үү");
             return;
         }
 
-        const scheduledDate = new Date(formData.scheduledAt);
-        const regEndDate = new Date(formData.registrationEndDate);
-
-        if (regEndDate >= scheduledDate) {
-            toast.error("Бүртгэл дуусах огноо шалгалт эхлэх огнооноос өмнө байх ёстой");
-            return;
-        }
 
         setLoadingSubjects(true);
         try {
@@ -188,8 +179,6 @@ export default function EditExamPage() {
 
             await ExamService.updateExam(id, {
                 title: formData.title,
-                scheduledAt: new Date(formData.scheduledAt),
-                registrationEndDate: new Date(formData.registrationEndDate),
                 duration: parseInt(formData.duration),
                 grade: formData.grade,
                 maxQuestions: parseInt(formData.maxQuestions),
@@ -264,29 +253,12 @@ export default function EditExamPage() {
                             </div>
 
                             <div className="grid md:grid-cols-2 gap-6">
-                                <div className="space-y-2">
-                                    <label className="text-sm font-semibold text-slate-700 flex items-center gap-2">
-                                        <Calendar className="w-4 h-4 text-blue-500" />
-                                        Шалгалт эхлэх огноо
-                                    </label>
-                                    <Input
-                                        type="datetime-local"
-                                        value={formData.scheduledAt}
-                                        onChange={(e) => setFormData({ ...formData, scheduledAt: e.target.value })}
-                                        disabled={isPublished}
-                                    />
-                                </div>
-                                <div className="space-y-2">
-                                    <label className="text-sm font-semibold text-slate-700 flex items-center gap-2">
-                                        <Clock className="w-4 h-4 text-emerald-500" />
-                                        Бүртгэл дуусах огноо
-                                    </label>
-                                    <Input
-                                        type="datetime-local"
-                                        value={formData.registrationEndDate}
-                                        onChange={(e) => setFormData({ ...formData, registrationEndDate: e.target.value })}
-                                        disabled={isPublished}
-                                    />
+                                <div className="md:col-span-2 rounded-xl bg-blue-50 border border-blue-200 p-4 text-sm text-blue-900 flex items-start gap-2">
+                                    <Calendar className="w-4 h-4 mt-0.5 shrink-0 text-blue-600" />
+                                    <span>
+                                        Огноо шаардлагагүй — шалгалт нь явцын хуудасны
+                                        <strong> «Бүгдэд эхлүүлэх»</strong> товчоор эхэлнэ.
+                                    </span>
                                 </div>
                             </div>
 

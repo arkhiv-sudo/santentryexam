@@ -1,4 +1,5 @@
 import { ReactNode } from "react";
+import { Logo } from "@/components/ui/Logo";
 
 export default function StudentPortalLayout({
     children,
@@ -9,10 +10,8 @@ export default function StudentPortalLayout({
         <div className="min-h-screen bg-slate-50 flex flex-col">
             <header className="bg-white border-b border-slate-200 py-4 shadow-sm">
                 <div className="max-w-4xl mx-auto px-4 md:px-8 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center font-black text-lg">
-                            S
-                        </div>
+                    <div className="flex items-center gap-2.5">
+                        <Logo size={34} />
                         <span className="text-xl font-bold text-slate-800 tracking-tight">Шалгалтын Систем</span>
                     </div>
                 </div>

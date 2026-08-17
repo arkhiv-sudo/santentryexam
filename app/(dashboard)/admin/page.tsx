@@ -5,7 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Users, FileQuestion, ClipboardList, Settings, Award, BookOpen, ShieldCheck, Megaphone, Archive, FileClock } from "lucide-react";
+import PendingRequestsPanel from "@/components/admin/PendingRequestsPanel";
+import { Users, FileQuestion, ClipboardList, Settings, Award, BookOpen, ShieldCheck, Megaphone, Archive, FileClock, Trophy, GraduationCap } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { doc } from "firebase/firestore";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -97,6 +98,24 @@ export default function AdminDashboard() {
             iconColor: "text-purple-600"
         },
         {
+            title: "Шалгалтын дүн",
+            description: "Үр дүн, зэрэглэл, сурагч бүрийн хариулт, CSV татах",
+            icon: Trophy,
+            href: "/admin/results",
+            gradient: "from-amber-500 to-orange-500",
+            iconBg: "bg-amber-100",
+            iconColor: "text-amber-600"
+        },
+        {
+            title: "Сурагчид",
+            description: "Excel-ээс сурагч импортлох, нэвтрэх код олгох",
+            icon: GraduationCap,
+            href: "/admin/students",
+            gradient: "from-sky-500 to-blue-500",
+            iconBg: "bg-sky-100",
+            iconColor: "text-sky-600"
+        },
+        {
             title: "Хичээлүүд удирдах",
             description: "Хичээл нэмэх, устгах",
             icon: BookOpen,
@@ -116,7 +135,7 @@ export default function AdminDashboard() {
         },
         {
             title: "Мэдэгдлийн удирдлага",
-            description: "Нийт эцэг эхчүүдэд харагдах мэдэгдэл оруулах",
+            description: "Нийт хэрэглэгчдэд харагдах мэдэгдэл оруулах",
             icon: Megaphone,
             href: "/admin/announcements",
             gradient: "from-amber-500 to-orange-500",
@@ -160,6 +179,8 @@ export default function AdminDashboard() {
 
     return (
         <div className="space-y-5">
+            <PendingRequestsPanel />
+
             {/* Compact Header */}
             <div className="relative overflow-hidden rounded-xl bg-linear-to-r from-slate-800 to-slate-900 px-6 py-5 border border-slate-700 shadow-sm text-white">
                 <div className="relative z-10 flex items-center gap-4">

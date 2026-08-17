@@ -46,17 +46,20 @@ function toDate(value: unknown): Date {
 
 function examFromDoc(id: string, data: Record<string, unknown>): Exam {
     return {
-        ...(data as Omit<Exam, "id" | "scheduledAt" | "registrationEndDate">),
+        ...(data as Omit<Exam, "id">),
         id,
-        scheduledAt: toDate(data.scheduledAt),
-        registrationEndDate: toDate(data.registrationEndDate),
-    } as Exam;
+        // Хуучин шалгалтуудад л байж болох талбарууд (шинэ шалгалтад бичигдэхгүй)
+        scheduledAt: data.scheduledAt ? toDate(data.scheduledAt) : null,
+        startedAt: data.startedAt ? toDate(data.startedAt) : null,
+        createdAt: data.createdAt ? toDate(data.createdAt) : null,
+    } as unknown as Exam;
 }
 
 export const ExamService = {
     // ── Read ──────────────────────────────────────────────────────────────────
     getAllExams: async (): Promise<Exam[]> => {
-        const q = query(collection(db, EXAMS), orderBy("scheduledAt", "desc"));
+        // Огноогүй болсон тул үүсгэсэн дарааллаар (шинэ нь эхэнд)
+        const q = query(collection(db, EXAMS), orderBy("createdAt", "desc"));
         const snapshot = await getDocs(q);
         return snapshot.docs.map(d => examFromDoc(d.id, d.data() as Record<string, unknown>));
     },
@@ -147,10 +150,11 @@ export const ExamService = {
         if (examData.status !== "published") {
             throw new Error("Шалгалт нийтлэгдээгүй байна");
         }
-        const regEndRaw = examData.registrationEndDate;
-        const regEnd = regEndRaw?.toDate ? regEndRaw.toDate() : (regEndRaw ? new Date(regEndRaw) : null);
-        if (regEnd && new Date() > regEnd) {
-            throw new Error("Бүртгэлийн хугацаа дууссан байна");
+        // Бүртгэлийн эцсийн хугацаа гэсэн ойлголт байхгүй болсон — шалгалт
+        // дуусаагүй л бол бүртгүүлж болно (эхлэх нь админаас хамаарна).
+        const startedMs = examData.startedAt?.toMillis?.() ?? null;
+        if (startedMs && Date.now() > startedMs + (examData.duration || 60) * 60 * 1000) {
+            throw new Error("Шалгалт дууссан байна");
         }
 
         const docRef = await addDoc(collection(db, REGISTRATIONS), {
@@ -334,7 +338,7 @@ export const ExamService = {
         });
     },
 
-    /** Get results for multiple students (for parent dashboard). */
+    /** Get results for multiple students (admin/teacher analytics). */
     getResultsForStudents: async (studentIds: string[]): Promise<ExamResult[]> => {
         if (studentIds.length === 0) return [];
 

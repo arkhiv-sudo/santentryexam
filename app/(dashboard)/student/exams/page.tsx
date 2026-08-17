@@ -13,7 +13,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/Button";
 import { RetakeService, RetakeRequest } from "@/lib/services/retake-service";
-import { useServerTime, formatTimeLeft } from "@/hooks/useServerTime";
+import { useServerTime } from "@/hooks/useServerTime";
+import { getExamState, EXAM_STATE_LABEL, EXAM_STATE_CLASS } from "@/lib/exam-state";
 
 export default function StudentExamsPage() {
     const { profile } = useAuth();
@@ -40,8 +41,7 @@ export default function StudentExamsPage() {
                 return {
                     id: doc.id,
                     ...data,
-                    scheduledAt: data.scheduledAt?.toDate ? data.scheduledAt.toDate() : new Date(data.scheduledAt),
-                    registrationEndDate: data.registrationEndDate?.toDate ? data.registrationEndDate.toDate() : new Date(data.registrationEndDate)
+                    startedAt: data.startedAt?.toDate ? data.startedAt.toDate() : null
                 } as Exam;
             });
         },
@@ -126,16 +126,13 @@ export default function StudentExamsPage() {
         const reg = registrations.find(r => r.examId === exam.id);
         const isRegistered = !!reg;
         const isCompleted = reg?.status === "completed";
-        const regEnd = new Date(exam.registrationEndDate);
-        const schedule = new Date(exam.scheduledAt);
-        const registrationExpired = now > regEnd;
-        
-        const examEndTime = new Date(schedule.getTime() + (exam.duration * 60000));
-        const entryDeadline = new Date(schedule.getTime() + (10 * 60000));
-        const outOfTime = now >= examEndTime;
+        // Огноогоор биш ТӨЛӨВӨӨР: шалгалт админ эхлүүлснээр эхэлдэг.
+        const examState = getExamState(exam as unknown as { status?: string; duration?: number; startedAt?: unknown }, now.getTime());
+        const registrationExpired = false;              // бүртгэлийн эцсийн хугацаа гэж байхгүй болсон
+        const outOfTime = examState === "finished";
         const hasStarted = reg?.status === "started";
-        const isLate = !hasStarted && now > entryDeadline && now < examEndTime;
-        const canStart = isRegistered && !isCompleted && now >= schedule && now < examEndTime && (hasStarted || now <= entryDeadline);
+        const isLate = false;                            // хоцролтын хаалт байхгүй — бэлэн байдлаар шийднэ
+        const canStart = isRegistered && !isCompleted && (examState === "open" || examState === "running");
 
         const result = results.find(r => r.examId === exam.id);
 
@@ -166,7 +163,9 @@ export default function StudentExamsPage() {
                             <div className="flex flex-wrap gap-4 text-xs text-slate-500">
                                 <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-blue-400" />{exam.duration} минут</span>
                                 <span className="flex items-center gap-1.5"><ClipboardList className="w-3.5 h-3.5 text-indigo-400" />{exam.maxQuestions} асуулт</span>
-                                <span className="flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5 text-violet-400" />{schedule.toLocaleDateString()} {schedule.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                                <span className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full font-bold ${EXAM_STATE_CLASS[examState]}`}>
+                                    <Calendar className="w-3.5 h-3.5" />{EXAM_STATE_LABEL[examState]}
+                                </span>
                                 {(exam as Exam & { passingScore?: number }).passingScore && (
                                     <span className="flex items-center gap-1.5"><Trophy className="w-3.5 h-3.5 text-amber-400" />Тэнцэх: {(exam as Exam & { passingScore?: number }).passingScore}%</span>
                                 )}
@@ -235,13 +234,8 @@ export default function StudentExamsPage() {
                                 ) : (
                                     <div className="bg-blue-50 px-3 py-1.5 rounded-lg flex flex-col items-end gap-0.5 min-w-[120px]">
                                         <div className="flex items-center text-blue-500 text-xs font-bold gap-1">
-                                            <Clock className="w-3.5 h-3.5" /> Хүлээгдэж байна
+                                            <Clock className="w-3.5 h-3.5" /> Багшийг хүлээж байна
                                         </div>
-                                        {formatTimeLeft(schedule, now) && (
-                                            <span className="text-[10px] text-blue-400 font-medium">
-                                                Эхлэхэд: {formatTimeLeft(schedule, now)}
-                                            </span>
-                                        )}
                                     </div>
                                 )
                             ) : registrationExpired ? (
@@ -257,11 +251,6 @@ export default function StudentExamsPage() {
                                     >
                                         {registerMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Бүртгүүлэх"}
                                     </Button>
-                                    {formatTimeLeft(regEnd, now) && (
-                                        <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">
-                                            Хаагдахад: {formatTimeLeft(regEnd, now)}
-                                        </span>
-                                    )}
                                 </div>
                             )}
                         </div>

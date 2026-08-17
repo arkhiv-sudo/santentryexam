@@ -38,8 +38,13 @@ export async function POST(request: NextRequest) {
             sameSite: "lax",
         });
 
-        // Role cookie — used by middleware (request.cookies access works with httpOnly)
-        const role = decodedToken.role || 'student';
+        // Role cookie — used by middleware (request.cookies access works with httpOnly).
+        // Unknown/removed roles (e.g. the retired 'parent' claim still sitting in an
+        // old token) fall back to 'student' so nobody gets a cookie pointing at a
+        // route that no longer exists.
+        const VALID_ROLES = ['admin', 'teacher', 'student'];
+        const claimRole = decodedToken.role as string | undefined;
+        const role = claimRole && VALID_ROLES.includes(claimRole) ? claimRole : 'student';
         (await cookies()).set("role", role, {
             httpOnly: true,
             secure: process.env.NODE_ENV === "production",

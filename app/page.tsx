@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { GraduationCap, LogIn, Loader2 } from "lucide-react";
+import { Logo } from "@/components/ui/Logo";
 
 export default function Home() {
   const { user, profile, loading } = useAuth();
@@ -15,7 +16,6 @@ export default function Home() {
       // Redirect to role-specific dashboard
       if (profile.role === 'admin') router.push('/admin');
       else if (profile.role === 'teacher') router.push('/teacher');
-      else if (profile.role === 'parent') router.push('/parent');
       else if (profile.role === 'student') router.push('/student');
       else router.push('/login');
     }
@@ -33,10 +33,8 @@ export default function Home() {
     <div className="min-h-screen flex flex-col bg-slate-50">
         <header className="bg-white border-b border-slate-200 py-4 shadow-sm">
             <div className="max-w-4xl mx-auto px-4 md:px-8 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center font-black text-lg">
-                        S
-                    </div>
+                <div className="flex items-center gap-2.5">
+                    <Logo size={34} />
                     <span className="text-xl font-bold text-slate-800 tracking-tight">Шалгалтын Систем</span>
                 </div>
             </div>
@@ -47,8 +45,8 @@ export default function Home() {
                 <Card className="shadow-2xl border-0 overflow-hidden rounded-2xl">
                     <div className="bg-linear-to-r from-blue-600 to-indigo-600 p-8 text-center text-white relative">
                         <div className="absolute top-0 inset-x-0 h-full bg-white/5 opacity-20"></div>
-                        <div className="w-16 h-16 bg-white/20 backdrop-blur rounded-2xl mx-auto flex items-center justify-center mb-4 relative z-10 shadow-lg">
-                            <GraduationCap className="w-8 h-8 text-white" />
+                        <div className="w-16 h-16 bg-white rounded-2xl mx-auto flex items-center justify-center mb-4 relative z-10 shadow-lg">
+                            <Logo size={46} />
                         </div>
                         <h1 className="text-3xl font-black relative z-10">Тавтай морилно уу</h1>
                         <p className="text-blue-100 font-medium mt-2 relative z-10">Та хэрхэн шалгалт өгөхийг хүсэж байна вэ?</p>

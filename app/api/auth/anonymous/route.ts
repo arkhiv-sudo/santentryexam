@@ -1,24 +1,17 @@
-import { NextRequest, NextResponse } from "next/server";
-import { adminAuth } from "@/lib/firebase-admin";
-import { rateLimit, getRateLimitKey } from "@/lib/rate-limit";
+import { NextResponse } from "next/server";
 
-export async function POST(request: NextRequest) {
-    const key = getRateLimitKey(request, 'anonymous');
-    const limit = rateLimit(key, 5, 60 * 1000); // 5 requests per minute per IP
-    if (!limit.allowed) {
-        return NextResponse.json({ error: 'Хэт олон хүсэлт. 1 минутын дараа дахин оролдоно уу.' }, { status: 429 });
-    }
-
-    try {
-        // Generate a random UID for the "anonymous" student
-        const guestUid = `guest_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-
-        // Create a custom token with student role attached
-        const customToken = await adminAuth.createCustomToken(guestUid, { role: "student" });
-
-        return NextResponse.json({ token: customToken });
-    } catch (error) {
-        console.error("Error creating custom token:", error);
-        return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to create custom token" }, { status: 500 });
-    }
+/**
+ * DISABLED — the anonymous ("зочин") exam entry flow was replaced by the
+ * phone + code sign-in at /s (see /api/auth/exam-login).
+ *
+ * This endpoint used to mint a student-role custom token for anyone who asked,
+ * which let unauthenticated callers register for exams and read exam questions.
+ * It is kept as a 410 stub rather than deleted so the removal is easy to revert;
+ * delete the file once you're happy with the new flow.
+ */
+export async function POST() {
+    return NextResponse.json(
+        { error: "Зочин горим хаагдсан. Утасны дугаар болон кодоороо нэвтэрнэ үү." },
+        { status: 410 }
+    );
 }

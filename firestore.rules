@@ -9,31 +9,25 @@ service cloud.firestore {
     function isAdmin() { return isAuth() && request.auth.token.role == 'admin'; }
     function isTeacher() { return isAuth() && request.auth.token.role == 'teacher'; }
     function isStudent() { return isAuth() && request.auth.token.role == 'student'; }
-    function isParent() { return isAuth() && request.auth.token.role == 'parent'; }
     function isAdminOrTeacher() { return isAdmin() || isTeacher(); }
 
-    function isParentOf(studentId) {
-      return isParent() &&
-        studentId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.children;
-    }
-
     // Users — each user can read their own profile; admins/teachers read all.
-    // Parents can read their own children's profiles (via the children array).
     match /users/{userId} {
       allow read: if isAdmin()
                    || isTeacher()
-                   || (isAuth() && request.auth.uid == userId)
-                   || (isParent() && userId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.children);
+                   || (isAuth() && request.auth.uid == userId);
       allow create: if isAuth() && request.auth.uid == userId;
       // FIX 10: Users may update their own doc but cannot change privileged fields
-      // (role, status, parentId, children, studentCode). Admins can update anything.
+      // (role, status, studentCode, phone, examCode). Admins can update anything.
+      // `phone` / `examCode` are login credentials for the /s phone+code flow —
+      // a student must never be able to rewrite their own (or claim another's).
       allow update: if (isAuth() && request.auth.uid == userId
-                        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'status', 'parentId', 'children', 'studentCode']))
+                        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'status', 'studentCode', 'phone', 'examCode', 'isImported']))
                       || isAdmin();
       allow delete: if isAdmin();
     }
 
-    // Questions — students/parents never read directly (served via API route).
+    // Questions — students never read directly (served via API route).
     // Review workflow: ALL teachers can review/edit ANY question. Edits set
     // reviewedBy / reviewedAt fields. Admins always have full control.
     match /questions/{questionId} {
@@ -50,20 +44,18 @@ service cloud.firestore {
     }
 
     // Registrations
-    // FIX 18: Tighter create payload validation (students only — parent-created
-    // registrations still go through API/Admin SDK paths). FIX 20: students may
+    // FIX 18: Tighter create payload validation (students only — server-side
+    // registration goes through the Admin SDK). FIX 20: students may
     // only update a constrained whitelist of fields; admins keep full control
     // for extendedTime, retake resets, etc.
     match /registrations/{registrationId} {
       allow read: if isAdmin() || isTeacher()
-        || (isStudent() && resource.data.studentId == request.auth.uid)
-        || (isParent() && isParentOf(resource.data.studentId));
-      allow create: if (isStudent()
+        || (isStudent() && resource.data.studentId == request.auth.uid);
+      allow create: if isStudent()
                         && request.resource.data.studentId == request.auth.uid
                         && request.resource.data.keys().hasOnly(['studentId','examId','status','registeredAt','violations'])
                         && request.resource.data.violations == 0
-                        && request.resource.data.status == 'registered')
-                    || (isParent() && isParentOf(request.resource.data.studentId));
+                        && request.resource.data.status == 'registered';
       allow update: if isAdmin()
                     || (isStudent()
                         && resource.data.studentId == request.auth.uid
@@ -77,16 +69,14 @@ service cloud.firestore {
     // these rules; rules exist only to guard against direct client access.
     match /submissions/{submissionId} {
       allow read: if isAdmin() || isTeacher()
-        || (isStudent() && resource.data.studentId == request.auth.uid)
-        || (isParent() && isParentOf(resource.data.studentId));
+        || (isStudent() && resource.data.studentId == request.auth.uid);
       allow create, update, delete: if false;
     }
 
     // Exam Results
     match /exam_results/{resultId} {
       allow read: if isAdmin() || isTeacher()
-        || (isStudent() && resource.data.studentId == request.auth.uid)
-        || (isParent() && isParentOf(resource.data.studentId));
+        || (isStudent() && resource.data.studentId == request.auth.uid);
       allow write: if isAdmin();
     }
 
@@ -205,6 +195,13 @@ service cloud.firestore {
     match /admin_audit/{entryId} {
       allow read: if isAdmin();
       allow create, update, delete: if false;
+    }
+
+    // Exam login attempt counters (phone+code brute-force limiter).
+    // Written exclusively by /api/auth/exam-login via the Admin SDK; no client
+    // may read or write them — reading would leak which phones are registered.
+    match /exam_login_attempts/{phone} {
+      allow read, write: if false;
     }
 
     // FIX 50: System logs — any authenticated client can write an error log,

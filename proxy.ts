@@ -1,17 +1,31 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
+/** Системд одоо байгаа эрхүүд. Хуучин 'parent' энд байхгүй тул тийм cookie-тэй
+ *  хэрэглэгчийг «эрхгүй» гэж үзэж, cookie-г нь цэвэрлэнэ. */
+const VALID_ROLES = ['admin', 'teacher', 'student'];
+
+/** Хуучирсан/хүчингүй session-ий cookie-г устгаад хүссэн хуудас руу нь оруулна. */
+function clearSession(request: NextRequest, redirectTo?: string) {
+    const response = redirectTo
+        ? NextResponse.redirect(new URL(redirectTo, request.url))
+        : NextResponse.next();
+    response.cookies.delete('__session');
+    response.cookies.delete('role');
+    return response;
+}
+
 export default function proxy(request: NextRequest) {
     try {
         const { pathname } = request.nextUrl;
         const session = request.cookies.get('__session')?.value;
         const role = request.cookies.get('role')?.value;
+        const hasValidRole = !!role && VALID_ROLES.includes(role);
 
         // 1. Protected paths check
         const isDashboard = pathname.startsWith('/admin') ||
             pathname.startsWith('/teacher') ||
-            pathname.startsWith('/student') ||
-            pathname.startsWith('/parent');
+            pathname.startsWith('/student');
 
         if (isDashboard && !session) {
             const loginUrl = request.nextUrl.clone();
@@ -19,15 +33,22 @@ export default function proxy(request: NextRequest) {
             return NextResponse.redirect(loginUrl);
         }
 
-        // 2. Auth pages redirection for logged-in users
-        if (session && (pathname === '/login' || pathname === '/signup')) {
+        // 2. Session-тэй мөртлөө эрх нь хүчингүй (жишээ нь устгасан 'parent'
+        //    эсвэл устсан бүртгэлийн үлдэгдэл) бол cookie-г цэвэрлэж, /login-д
+        //    үлдээнэ. Үгүй бол хэрэглэгч байхгүй хуудас руу түлхэгдэж 404 авна.
+        if (session && !hasValidRole) {
+            return clearSession(request, pathname === '/login' ? undefined : '/login');
+        }
+
+        // 3. Auth pages redirection for logged-in users
+        if (session && hasValidRole && pathname === '/login') {
             const destUrl = request.nextUrl.clone();
-            destUrl.pathname = role ? `/${role}` : '/';
+            destUrl.pathname = `/${role}`;
             return NextResponse.redirect(destUrl);
         }
 
-        // 3. RBAC — redirect to home if the user's role doesn't match the path.
-        // FIX 8: Guards /admin, /teacher, /student, /parent.
+        // 4. RBAC — redirect to home if the user's role doesn't match the path.
+        // FIX 8: Guards /admin, /teacher, /student.
         if (pathname.startsWith('/admin') && role !== 'admin') {
             return NextResponse.redirect(new URL('/', request.url));
         }
@@ -35,9 +56,6 @@ export default function proxy(request: NextRequest) {
             return NextResponse.redirect(new URL('/', request.url));
         }
         if (pathname.startsWith('/student') && role !== 'student' && role !== 'admin') {
-            return NextResponse.redirect(new URL('/', request.url));
-        }
-        if (pathname.startsWith('/parent') && role !== 'parent' && role !== 'admin') {
             return NextResponse.redirect(new URL('/', request.url));
         }
 
@@ -53,9 +71,7 @@ export const config = {
         '/admin/:path*',
         '/teacher/:path*',
         '/student/:path*',
-        '/parent/:path*',
         '/login',
-        '/signup',
         '/'
     ],
 };

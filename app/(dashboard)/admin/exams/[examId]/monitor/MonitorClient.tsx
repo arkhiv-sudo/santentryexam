@@ -1,19 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { db } from "@/lib/firebase";
 import { collection, query, where, onSnapshot, doc, updateDoc, writeBatch } from "firebase/firestore";
 import { Registration, Exam, UserProfile } from "@/types";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { toast } from "sonner";
-import { Clock, ShieldAlert, MonitorPlay, LogOut, CheckCircle, RotateCcw } from "lucide-react";
+import { Clock, ShieldAlert, MonitorPlay, LogOut, CheckCircle, RotateCcw, FileText, Download, Info, Play, BellRing, UserCheck, Hourglass, DoorOpen } from "lucide-react";
+import { useChangeFlash, useFlipRows, usePrefersReducedMotion } from "@/lib/row-animation";
 import { useConfirm } from "@/components/providers/ModalProvider";
 import { useRouter } from "next/navigation";
 import { RetakeService } from "@/lib/services/retake-service";
 import { ExamService } from "@/lib/services/exam-service";
 import { useAuth } from "@/components/AuthProvider";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import SubmissionDetailModal from "@/components/admin/SubmissionDetailModal";
+import { downloadCsv, formatDuration, safeFileName, todayStamp } from "@/lib/download";
 
 interface RetakeRequest {
     id: string;
@@ -32,12 +35,36 @@ interface ResultEntry {
     passed: boolean;
     rank: number | null;
     timeTaken?: number;
+    invalidatedByViolation?: boolean;
 }
 
 interface MonitorClientProps {
     examId: string;
     exam: Exam;
     usersMap: Record<string, UserProfile>;
+}
+
+type RegRow = Registration & { id: string };
+
+/** `draftAnswers` доторх хоосон биш хариултын тоо (нэмэлт Firestore уншилтгүй). */
+function countAnswered(reg: RegRow): number {
+    const draft = reg.draftAnswers;
+    if (!draft) return 0;
+    let n = 0;
+    for (const value of Object.values(draft)) {
+        if (value === null || value === undefined) continue;
+        if (String(value).trim() === "") continue;
+        n++;
+    }
+    return n;
+}
+
+/** Эрэмбийн бүлэг: 0 = дүнтэй, 1 = шалгалт өгч байгаа, 2 = дүн хүлээж буй, 3 = эхлээгүй. */
+function sortTier(reg: RegRow, hasResult: boolean): number {
+    if (hasResult) return 0;
+    if (reg.status === "started") return 1;
+    if (reg.status === "completed") return 2;
+    return 3;
 }
 
 export default function MonitorClient({ examId, exam, usersMap }: MonitorClientProps) {
@@ -49,9 +76,71 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
     const [isBulkRetakeBusy, setIsBulkRetakeBusy] = useState(false);
     const [isExtending, setIsExtending] = useState(false);
     const [forceSubmittingId, setForceSubmittingId] = useState<string | null>(null);
+    const [detailFor, setDetailFor] = useState<{ studentId: string; name: string } | null>(null);
+    /** Шалгалтыг админ эхлүүлсэн мөч (сервер дата, шууд сонсогчоор шинэчлэгдэнэ). */
+    const [startedAt, setStartedAt] = useState<number | null>(
+        (exam as unknown as { startedAt?: Date | string | null }).startedAt
+            ? new Date((exam as unknown as { startedAt: Date | string }).startedAt).getTime()
+            : null,
+    );
+    const [startingExam, setStartingExam] = useState(false);
+    const [nudgingId, setNudgingId] = useState<string | null>(null);
     const confirm = useConfirm();
     const router = useRouter();
     const { user: adminUser } = useAuth();
+    const reducedMotion = usePrefersReducedMotion();
+
+    /** Энэ шалгалтын нийт асуултын тоо — явцын хувь бодоход хэрэглэнэ. */
+    const totalQuestions = exam.questionIds?.length ?? 0;
+
+    /**
+     * Хүснэгтийн эрэмбэ: дүнтэй нь оноо ихээс бага руу (тэнцвэл хурдан
+     * дуусгасан нь дээш), дараа нь шалгалт өгч байгаа хүмүүс хариулсан
+     * асуултын тоогоор, хамгийн доор нь эхлээгүй сурагчид.
+     */
+    const sortedRegistrations = useMemo(() => {
+        const nameOf = (reg: RegRow) => {
+            const u = usersMap[reg.studentId];
+            return `${u?.lastName || ""} ${u?.firstName || ""}`.trim() || reg.studentId;
+        };
+        return [...registrations].sort((a, b) => {
+            const ra = results[a.studentId];
+            const rb = results[b.studentId];
+            const ta = sortTier(a, !!ra);
+            const tb = sortTier(b, !!rb);
+            if (ta !== tb) return ta - tb;
+
+            if (ta === 0 && ra && rb) {
+                if (rb.score !== ra.score) return rb.score - ra.score;          // оноо ихээс бага руу
+                const timeA = ra.timeTaken ?? Number.POSITIVE_INFINITY;
+                const timeB = rb.timeTaken ?? Number.POSITIVE_INFINITY;
+                if (timeA !== timeB) return timeA - timeB;                       // хурдан нь дээш
+            } else if (ta === 1) {
+                const ca = countAnswered(a);
+                const cb = countAnswered(b);
+                if (cb !== ca) return cb - ca;                                    // хариулсан нь дээш
+            }
+
+            const byName = nameOf(a).localeCompare(nameOf(b), "mn");
+            return byName !== 0 ? byName : a.id.localeCompare(b.id);              // тогтвортой эрэмбэ
+        });
+    }, [registrations, results, usersMap]);
+
+    // Мөр байрлалаа солиход зөөлөн гулсуулах (FLIP).
+    const { registerRow } = useFlipRows<HTMLTableRowElement>(
+        useMemo(() => sortedRegistrations.map(r => r.id), [sortedRegistrations]),
+        { disabled: reducedMotion },
+    );
+
+    // Оноо нь шинээр ирсэн / өөрчлөгдсөн сурагчийн мөрийг ~1.5 сек анивчуулах.
+    const scoreSignatures = useMemo(() => {
+        const map: Record<string, string> = {};
+        for (const r of Object.values(results)) {
+            map[r.studentId] = `${r.score}/${r.maxScore}/${r.percentage}`;
+        }
+        return map;
+    }, [results]);
+    const flashingStudents = useChangeFlash(scoreSignatures, { disabled: reducedMotion });
 
     useEffect(() => {
         // Live listen to registrations
@@ -62,6 +151,14 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                 regs.push({ id: doc.id, ...doc.data() } as Registration & { id: string });
             });
             setRegistrations(regs);
+        });
+
+        // Шалгалтын доккумент — админ эхлүүлмэгц бүх төлөв шинэчлэгдэнэ
+        const unsubExam = onSnapshot(doc(db, "exams", examId), d => {
+            if (d.exists()) {
+                const st = (d.data().startedAt as unknown as { toMillis?: () => number })?.toMillis?.() ?? null;
+                setStartedAt(st);
+            }
         });
 
         // Live listen to retake_requests for this exam
@@ -89,6 +186,7 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                     passed: !!data.passed,
                     rank: data.rank ?? null,
                     timeTaken: data.timeTaken,
+                    invalidatedByViolation: data.invalidatedByViolation === true,
                 };
             });
             setResults(map);
@@ -98,8 +196,121 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
             unsubReg();
             unsubReq();
             unsubRes();
+            unsubExam();
         };
     }, [examId]);
+
+    /** Шалгалтыг БҮГДЭД зэрэг эхлүүлэх. */
+    const handleStartExam = async () => {
+        const readyCount = registrations.filter(r => r.status === "ready").length;
+        const notReady = registrations.length - readyCount;
+        const ok = await confirm({
+            title: "Шалгалтыг бүгдэд эхлүүлэх",
+            message: notReady > 0
+                ? `Бэлэн болсон ${readyCount} сурагчид шалгалт эхэлнэ. Бэлэн болоогүй ${notReady} сурагч ОРЖ ЧАДАХГҮЙ (дараа нь та тусад нь оруулж болно). Үргэлжлүүлэх үү?`
+                : `${readyCount} сурагч бүгд бэлэн байна. Шалгалтыг эхлүүлэх үү? Цаг тэр дороос тоологдоно.`,
+            confirmLabel: "Эхлүүлэх",
+            variant: notReady > 0 ? "destructive" : "default",
+        });
+        if (!ok) return;
+        setStartingExam(true);
+        try {
+            const res = await fetch(`/api/admin/exams/${examId}/control`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "start" }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || "Эхлүүлэхэд алдаа гарлаа");
+            toast.success(`Шалгалт эхэллээ — ${data.started} сурагч оров`);
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
+        } finally {
+            setStartingExam(false);
+        }
+    };
+
+    /** Бэлэн болоогүй сурагчид сануулга илгээх (дэлгэц дүүрэн анхааруулга + дуу). */
+    const handleNudge = async (studentId: string, name: string) => {
+        setNudgingId(studentId);
+        try {
+            const res = await fetch(`/api/admin/exams/${examId}/control`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "nudge", studentId }),
+            });
+            if (!res.ok) throw new Error((await res.json()).error || "Алдаа");
+            toast.success(`${name} — сануулга илгээлээ`);
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
+        } finally {
+            setNudgingId(null);
+        }
+    };
+
+    /** Хоцорсон сурагчийг тусгайлан оруулах. */
+    const handleAdmit = async (studentId: string, name: string) => {
+        const ok = await confirm({
+            title: "Хоцорсон сурагчийг оруулах",
+            message: `${name}-г шалгалт руу оруулах уу? Түүнд үлдсэн хугацаа л ногдоно.`,
+            confirmLabel: "Оруулах",
+        });
+        if (!ok) return;
+        setNudgingId(studentId);
+        try {
+            const res = await fetch(`/api/admin/exams/${examId}/control`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "admit", studentId }),
+            });
+            if (!res.ok) throw new Error((await res.json()).error || "Алдаа");
+            toast.success(`${name} — оруулав`);
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
+        } finally {
+            setNudgingId(null);
+        }
+    };
+
+    /** Энэ шалгалтын бүх сурагчийн явц + дүнг CSV болгон татах. */
+    const exportResultsCsv = () => {
+        if (registrations.length === 0) {
+            toast.error("Татах дата алга байна");
+            return;
+        }
+        const statusLabel = (reg: Registration & { id: string }) =>
+            reg.forceSubmitted ? "Хүчээр дууссан"
+                : reg.status === "completed" ? "Дууссан"
+                    : reg.status === "started" ? "Явагдаж байна"
+                        : "Бүртгэлтэй";
+
+        const rows = [...registrations]
+            .sort((a, b) => (results[a.studentId]?.rank ?? 9999) - (results[b.studentId]?.rank ?? 9999))
+            .map(reg => {
+                const u = usersMap[reg.studentId] || {};
+                const r = results[reg.studentId];
+                return [
+                    r?.rank ?? "",
+                    `${u.lastName || ""} ${u.firstName || ""}`.trim() || reg.studentId,
+                    u.class || u.grade || "",
+                    u.phone || "",
+                    statusLabel(reg),
+                    r?.score ?? "",
+                    r?.maxScore ?? "",
+                    r ? `${r.percentage}%` : "",
+                    r ? (r.passed ? "Тэнцсэн" : "Тэнцээгүй") : "",
+                    formatDuration(r?.timeTaken),
+                    reg.violations ?? 0,
+                    r?.invalidatedByViolation ? "Зөрчлийн улмаас хүчингүй" : (r ? "Хүчинтэй" : ""),
+                    reg.extendedTime ? `${reg.extendedTime / 60} мин` : "",
+                    reg.ipAddress || "",
+                ];
+            });
+
+        downloadCsv(
+            ["Зэрэглэл", "Овог нэр", "Анги", "Утас", "Төлөв", "Оноо", "Нийт оноо", "Хувь", "Дүгнэлт", "Зарцуулсан", "Зөрчил", "Дүнгийн төлөв", "Нэмэлт цаг", "IP хаяг"],
+            rows,
+            `${safeFileName(exam.title || "shalgalt")}_dun_${todayStamp()}.csv`,
+        );
+        toast.success("CSV татагдлаа");
+    };
 
     const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.checked) {
@@ -275,7 +486,7 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
         }
     };
 
-    const handleApproveRetake = async (reqId: string, studentId: string) => {
+    const handleApproveRetake = async (reqId: string) => {
         const ok = await confirm({
             title: "Хүсэлт зөвшөөрөх",
             message: "Шалгалт дундуур гацсан/унтарсан хүсэлтийг зөвшөөрөх үү? Ингэснээр сурагчийн статусыг Registered болгож буцаан оруулна.",
@@ -287,7 +498,7 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
             // A4: Use the shared RetakeService implementation so single + bulk approval
             // paths share the same atomic batch (registration reset, results/submissions
             // cleanup, notification). No more duplicate inline batch logic here.
-            await RetakeService.approveRequest(reqId, studentId, examId);
+            await RetakeService.approveRequest(reqId);
             toast.success("Дахин шалгалт зөвшөөрөгдлөө");
         } catch (err: unknown) {
             toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
@@ -296,6 +507,18 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
 
     return (
         <div className="space-y-6 max-w-6xl mx-auto p-4 sm:p-6 pb-24">
+            {/* Мөр анивчих анимаци — шинэ дүн ирэхэд анхаарал татна. */}
+            <style>{`
+@keyframes monitorRowFlash {
+    0%   { background-color: rgba(16, 185, 129, 0.30); }
+    35%  { background-color: rgba(16, 185, 129, 0.22); }
+    100% { background-color: rgba(16, 185, 129, 0); }
+}
+.monitor-row-flash { animation: monitorRowFlash 1.5s ease-out 1; }
+@media (prefers-reduced-motion: reduce) {
+    .monitor-row-flash { animation: none; }
+}
+`}</style>
             <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
                 <div>
                     <h1 className="text-2xl font-black text-slate-900 flex items-center gap-3">
@@ -303,7 +526,9 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                         Шууд хяналт: {exam.title}
                     </h1>
                     <p className="text-slate-500 font-medium">
-                        Атсан огноо: {new Date(exam.scheduledAt).toLocaleString()} • {exam.duration} минут
+                        {startedAt
+                            ? `${new Date(startedAt).toLocaleTimeString("mn-MN", { hour: "2-digit", minute: "2-digit" })}-д эхэлсэн`
+                            : "Хараахан эхлээгүй"} • {exam.duration} минут
                     </p>
                 </div>
                 <Button variant="outline" onClick={() => router.push("/admin/exams")}>
@@ -357,13 +582,79 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                                         <p className="text-sm text-slate-500">{req.reason || "Шалтгаан бичээгүй"}</p>
                                     </div>
                                 </div>
-                                <Button size="sm" onClick={() => handleApproveRetake(req.id, req.studentId)} className="bg-emerald-600 hover:bg-emerald-700 text-white mt-2 sm:mt-0">
+                                <Button size="sm" onClick={() => handleApproveRetake(req.id)} className="bg-emerald-600 hover:bg-emerald-700 text-white mt-2 sm:mt-0">
                                     Оруулж үргэлжлүүлэх
                                 </Button>
                             </div>
                         ))}
                     </div>
                 </div>
+            )}
+
+            {/* ── Хүлээх танхим: шалгалт эхлэхээс ӨМНӨ ────────────────────── */}
+            {!startedAt && (
+                <Card className="border-0 shadow-xl ring-2 ring-indigo-300 overflow-hidden">
+                    <div className="bg-linear-to-r from-indigo-600 to-blue-600 px-6 py-5 flex flex-wrap items-center justify-between gap-4">
+                        <div className="text-white">
+                            <h2 className="text-xl font-black flex items-center gap-2">
+                                <Hourglass className="w-5 h-5" /> Хүлээх танхим
+                            </h2>
+                            <p className="text-blue-100 text-sm mt-1">
+                                Сурагчид «Бэлэн боллоо» дарж хүлээж байна. Та эхлүүлэхэд бүгдэд <strong>зэрэг</strong> эхэлнэ.
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-4">
+                            <div className="text-center text-white">
+                                <div className="text-3xl font-black">
+                                    {registrations.filter(r => r.status === "ready").length}
+                                    <span className="text-blue-200">/{registrations.length}</span>
+                                </div>
+                                <div className="text-[10px] font-bold uppercase tracking-wider text-blue-100">Бэлэн</div>
+                            </div>
+                            <Button
+                                onClick={handleStartExam}
+                                disabled={startingExam || registrations.filter(r => r.status === "ready").length === 0}
+                                className="bg-emerald-500 hover:bg-emerald-600 text-white font-black h-14 px-8 rounded-2xl text-lg gap-2 shadow-lg disabled:opacity-50"
+                            >
+                                <Play className="w-5 h-5" /> {startingExam ? "Эхлүүлж байна..." : "Бүгдэд эхлүүлэх"}
+                            </Button>
+                        </div>
+                    </div>
+
+                    <CardContent className="p-4">
+                        {registrations.length === 0 ? (
+                            <p className="text-center text-slate-500 py-6 font-medium">Сурагч хараахан ороогүй байна…</p>
+                        ) : (
+                            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                                {sortedRegistrations.map(reg => {
+                                    const u = usersMap[reg.studentId] || {};
+                                    const name = `${u.lastName || ""} ${u.firstName || ""}`.trim() || reg.studentId;
+                                    const ready = reg.status === "ready";
+                                    return (
+                                        <div key={reg.id} className={`flex items-center justify-between gap-2 rounded-xl border-2 p-3 ${ready ? "border-emerald-300 bg-emerald-50" : "border-amber-200 bg-amber-50/60"}`}>
+                                            <div className="min-w-0">
+                                                <p className="font-bold text-slate-900 truncate">{name}</p>
+                                                <p className={`text-xs font-bold flex items-center gap-1 ${ready ? "text-emerald-700" : "text-amber-700"}`}>
+                                                    {ready ? <><UserCheck className="w-3 h-3" /> Бэлэн</> : <><Hourglass className="w-3 h-3" /> Бэлэн болоогүй</>}
+                                                </p>
+                                            </div>
+                                            {!ready && (
+                                                <Button
+                                                    size="sm" variant="outline"
+                                                    disabled={nudgingId === reg.studentId}
+                                                    onClick={() => handleNudge(reg.studentId, name)}
+                                                    className="gap-1 text-amber-700 border-amber-300 hover:bg-amber-100 shrink-0"
+                                                >
+                                                    <BellRing className="w-3.5 h-3.5" /> Сануулах
+                                                </Button>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </CardContent>
+                </Card>
             )}
 
             {/* Дүнгийн товчлол — Statistics Summary */}
@@ -434,6 +725,13 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                         >
                             +10 минут
                         </Button>
+                        <Button
+                            variant="outline"
+                            onClick={exportResultsCsv}
+                            className="gap-2 bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                        >
+                            <Download className="w-4 h-4" /> Дүн татах (CSV)
+                        </Button>
                     </div>
                 </CardContent>
             </Card>
@@ -457,7 +755,15 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                                 <th className="px-6 py-4">Анги</th>
                                 <th className="px-6 py-4">IP Хаяг</th>
                                 <th className="px-6 py-4 text-center">Төлөв</th>
-                                <th className="px-6 py-4 text-center">Оноо</th>
+                                <th className="px-6 py-4 text-center">
+                                    <span
+                                        className="inline-flex items-center gap-1 cursor-help"
+                                        title="Явцын мэдээлэл сурагчийн браузераас ~1 минут тутам хадгалагддаг тул 1 хүртэл минут хоцрогдож болно"
+                                    >
+                                        Оноо / Явц
+                                        <Info className="w-3.5 h-3.5 text-blue-500" aria-hidden="true" />
+                                    </span>
+                                </th>
                                 <th className="px-6 py-4 text-center">Хувь</th>
                                 <th className="px-6 py-4 text-center">Зэрэглэл</th>
                                 <th className="px-6 py-4 text-center">Нэмэлт цаг</th>
@@ -472,10 +778,21 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                                     </td>
                                 </tr>
                             ) : (
-                                registrations.map(reg => {
+                                sortedRegistrations.map(reg => {
                                     const user = usersMap[reg.studentId] || {};
+                                    const result = results[reg.studentId];
+                                    const isFlashing = flashingStudents.has(reg.studentId);
+                                    const isRunning = !result && reg.status === "started";
+                                    const answered = isRunning ? countAnswered(reg) : 0;
+                                    const progressPct = isRunning && totalQuestions > 0
+                                        ? Math.min(100, Math.round((answered / totalQuestions) * 100))
+                                        : 0;
                                     return (
-                                        <tr key={reg.id} className="hover:bg-slate-50/50 transition-colors">
+                                        <tr
+                                            key={reg.id}
+                                            ref={registerRow(reg.id)}
+                                            className={`hover:bg-slate-50/50 transition-colors ${isFlashing ? "monitor-row-flash" : ""}`}
+                                        >
                                             <td className="px-6 py-4 text-center">
                                                 <input 
                                                     type="checkbox" 
@@ -507,6 +824,10 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                                                     <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-emerald-50 text-emerald-700 px-2 py-1 rounded-full border border-emerald-200">
                                                         <CheckCircle className="w-3 h-3" /> Дууссан
                                                     </span>
+                                                ) : reg.status === "ready" ? (
+                                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-indigo-50 text-indigo-700 px-2 py-1 rounded-full border border-indigo-200">
+                                                        <UserCheck className="w-3 h-3" /> Бэлэн
+                                                    </span>
                                                 ) : reg.status === "started" ? (
                                                     <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-blue-50 text-blue-700 px-2 py-1 rounded-full border border-blue-200">
                                                         <RotateCcw className="w-3 h-3 animate-spin"/> Явагдаж байна
@@ -517,12 +838,30 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                                                     </span>
                                                 )}
                                             </td>
-                                            {/* Оноо */}
+                                            {/* Оноо (дүн гарсан) эсвэл явц (шалгалт өгч байгаа) */}
                                             <td className="px-6 py-4 text-center">
-                                                {results[reg.studentId] ? (
+                                                {result ? (
                                                     <span className="font-bold text-slate-800">
-                                                        {results[reg.studentId].score}<span className="text-slate-400">/{results[reg.studentId].maxScore}</span>
+                                                        {result.score}<span className="text-slate-400">/{result.maxScore}</span>
                                                     </span>
+                                                ) : isRunning ? (
+                                                    <div
+                                                        className="flex flex-col items-center gap-1 min-w-[7.5rem] cursor-help"
+                                                        title="Сурагчийн браузер ~1 минут тутам хадгалдаг тул явц 1 хүртэл минут хоцорч болно"
+                                                    >
+                                                        <span className="text-[11px] font-bold text-indigo-700">
+                                                            хариулсан {answered}<span className="text-indigo-400">/{totalQuestions}</span>
+                                                        </span>
+                                                        <div className="w-28 h-2 rounded-full bg-indigo-100 overflow-hidden">
+                                                            <div
+                                                                className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-emerald-500 transition-[width] duration-500 ease-out"
+                                                                style={{ width: `${progressPct}%` }}
+                                                            />
+                                                        </div>
+                                                        <span className="text-[10px] font-bold text-indigo-500">
+                                                            {progressPct}% • ~1 мин тутам
+                                                        </span>
+                                                    </div>
                                                 ) : <span className="text-slate-300">—</span>}
                                             </td>
                                             {/* Хувь + тэнцсэн badge */}
@@ -540,7 +879,14 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                                             </td>
                                             {/* Зэрэглэл */}
                                             <td className="px-6 py-4 text-center">
-                                                {results[reg.studentId]?.rank ? (
+                                                {results[reg.studentId]?.invalidatedByViolation ? (
+                                                    <span
+                                                        className="inline-flex items-center gap-1 text-[10px] font-bold bg-amber-100 text-amber-800 px-2 py-1 rounded-full border border-amber-300"
+                                                        title="Дүрэм зөрчсөн тул дүн эргэлзээтэй — «Дүн» хуудсаас шийднэ"
+                                                    >
+                                                        <ShieldAlert className="w-3 h-3" /> зөрчилтэй
+                                                    </span>
+                                                ) : results[reg.studentId]?.rank ? (
                                                     <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-blue-100 text-blue-700 font-bold text-xs">
                                                         {results[reg.studentId].rank}
                                                     </span>
@@ -555,6 +901,31 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                                             </td>
                                             <td className="px-6 py-4 text-right">
                                                 <div className="flex justify-end gap-1">
+                                                    {startedAt && reg.status === "registered" && (
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="sm"
+                                                            disabled={nudgingId === reg.studentId}
+                                                            onClick={() => handleAdmit(reg.studentId, `${user.lastName || ""} ${user.firstName || ""}`.trim() || reg.studentId)}
+                                                            className="text-indigo-600 hover:bg-indigo-50 gap-1"
+                                                            title="Хоцорсон сурагчийг шалгалт руу оруулах"
+                                                        >
+                                                            <DoorOpen className="w-3.5 h-3.5" /> Оруулах
+                                                        </Button>
+                                                    )}
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        disabled={reg.status !== "completed" && !results[reg.studentId]}
+                                                        onClick={() => setDetailFor({
+                                                            studentId: reg.studentId,
+                                                            name: `${user.lastName || ""} ${user.firstName || ""}`.trim() || reg.studentId,
+                                                        })}
+                                                        className="text-blue-600 hover:text-blue-700 hover:bg-blue-50 gap-1"
+                                                        title="Асуулт бүрийн хариултыг харах"
+                                                    >
+                                                        <FileText className="w-3.5 h-3.5" /> Хариулт
+                                                    </Button>
                                                     <Button
                                                         variant="ghost"
                                                         size="sm"
@@ -589,6 +960,16 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                 </div>
             </div>
             </ErrorBoundary>
+
+            {detailFor && (
+                <SubmissionDetailModal
+                    examId={examId}
+                    studentId={detailFor.studentId}
+                    studentName={detailFor.name}
+                    exam={exam}
+                    onClose={() => setDetailFor(null)}
+                />
+            )}
         </div>
     );
 }

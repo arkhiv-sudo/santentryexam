@@ -45,15 +45,20 @@ export async function GET(
         return NextResponse.json({ error: "Шалгалт нийтлэгдээгүй байна" }, { status: 403 });
     }
 
-    // 4. Check time window: scheduledAt <= now <= scheduledAt + duration
+    // 4. Шалгалт нь АДМИН эхлүүлсний дараа л явагдана. Цаг нь `startedAt`-аас
+    //    тоологдох тул бүх сурагчид ЯГ ижил хугацаа ногдоно. `scheduledAt` нь
+    //    зөвхөн товлосон цаг (мэдээллийн зорилготой).
     const now = Date.now();
-    const scheduledAt: number = exam.scheduledAt?.toMillis?.() ?? new Date(exam.scheduledAt).getTime();
+    const startedAt: number | null = exam.startedAt?.toMillis?.() ?? null;
     const durationMs: number = (exam.duration || 60) * 60 * 1000;
-    const examEnd = scheduledAt + durationMs;
 
-    if (now < scheduledAt) {
-        return NextResponse.json({ error: "Шалгалт эхлээгүй байна" }, { status: 403 });
+    if (!startedAt) {
+        return NextResponse.json({
+            error: "Шалгалт хараахан эхлээгүй байна. Багш эхлүүлэхийг хүлээнэ үү.",
+            notStarted: true,
+        }, { status: 403 });
     }
+    const examEnd = startedAt + durationMs;
     if (now > examEnd) {
         return NextResponse.json({ error: "Шалгалтын хугацаа дууссан" }, { status: 403 });
     }
@@ -97,12 +102,15 @@ export async function GET(
         return NextResponse.json({ error: "Шалгалтыг аль хэдийн өгсөн байна" }, { status: 403 });
     }
 
-    // FIX 25: Late entry window is min(10 minutes, 20% of duration) so very short
-    // exams don't grant a window longer than the exam itself.
-    const lateEntryWindowMs = Math.min(10 * 60 * 1000, (exam.duration || 60) * 60 * 1000 * 0.2);
-    const entryDeadline = scheduledAt + lateEntryWindowMs;
-    if (reg.status !== "started" && now > entryDeadline) {
-        return NextResponse.json({ error: `Шалгалт эхэлсэнээс хойш ${Math.floor(lateEntryWindowMs / 60000)} минут өнгөрсөн тул орох боломжгүй` }, { status: 403 });
+    // Шалгалт эхлэхээс өмнө «Бэлэн боллоо» дараагүй сурагч орж чадахгүй.
+    // Админ тусгайлан оруулсан (`admittedLate`) эсвэл дахин өгөхийг зөвшөөрсөн
+    // (`retakeApprovedAt`) тохиолдолд л үл хамаарна.
+    const admitted = !!reg.admittedLate || !!reg.retakeApprovedAt;
+    if (!admitted && reg.status !== "started" && reg.status !== "ready") {
+        return NextResponse.json({
+            error: "Шалгалт эхлэхээс өмнө «Бэлэн боллоо» товчийг дараагүй тул орох боломжгүй. Багш/админд хандана уу.",
+            needsAdmission: true,
+        }, { status: 403 });
     }
 
     // 6. Fetch questions (from embedded snapshot or fallback to Firestore)
@@ -143,12 +151,39 @@ export async function GET(
             });
     }
 
+    // Хариултын ТӨРЛИЙГ хариултын түлхүүрээс тооцно (утгыг нь БИШ дамжуулна).
+    // Ингэснээр клиент тоон хариултад зөвхөн тоо оруулдаг талбар харуулна.
+    // Зөв хариу энд ямар ч байдлаар задрахгүй — зөвхөн 'number'|'fraction'|'text'.
+    try {
+        const answerDoc = await adminDb.collection("exam_answers").doc(examId).get();
+        const answerKey: Record<string, string> = answerDoc.exists ? (answerDoc.data()?.answerKey || {}) : {};
+        const clean = (v: string) => String(v ?? "")
+            .replace(/\$/g, "")
+            .replace(/\\d?frac\s*\{([^}]*)\}\s*\{([^}]*)\}/g, "$1/$2")
+            .replace(/\\[a-zA-Z]+/g, "")
+            .replace(/[{}]/g, "")
+            .trim();
+        questions = questions.map((qn: { id: string; type?: string;[key: string]: unknown }) => {
+            if (qn.type === "multiple_choice") return qn;
+            const a = clean(answerKey[qn.id] || "");
+            const answerFormat = /^-?\d+\s*\/\s*\d+$/.test(a)
+                ? "fraction"
+                : /^-?\d+([.,]\d+)?$/.test(a)
+                    ? "number"
+                    : "text";
+            return { ...qn, answerFormat };
+        });
+    } catch (err) {
+        console.error("[questions] answerFormat тооцоолол амжилтгүй:", err);
+    }
+
     return NextResponse.json({
         examId,
         title: exam.title,
         duration: exam.duration,
         grade: exam.grade,
-        scheduledAt: exam.scheduledAt?.toMillis?.() ?? scheduledAt,
+        scheduledAt: exam.scheduledAt?.toMillis?.() ?? null,
+        startedAt,
         passingScore: exam.passingScore ?? 0,
         questions,
         registrationId: regQuery.docs[0].id,

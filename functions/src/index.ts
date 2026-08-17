@@ -14,7 +14,7 @@ const db = admin.firestore();
 // FIX 38: Sanitize user-controlled strings before interpolating them into
 // notification titles/messages. Strips angle brackets and control characters
 // (anything below ASCII 0x20 except common whitespace is removed) and clamps
-// length so a malicious display name can't break parent/student notifications
+// length so a malicious display name can't break student notifications
 // or smuggle markup into clients that render messages as HTML.
 function sanitizeForNotification(s: unknown): string {
     if (s == null) return '';
@@ -31,20 +31,15 @@ function sanitizeForNotification(s: unknown): string {
  * signs up via Firebase Authentication.
  */
 export const onUserCreate = functions.auth.user().onCreate(async (user) => {
-    const { uid, email, displayName, providerData } = user;
+    const { uid, email, displayName } = user;
     const userRef = db.collection("users").doc(uid);
 
     try {
         const docSnap = await userRef.get();
         let role = "student";
 
-        // FIX 27 — NOTE: All Google OAuth sign-ins are assigned 'parent' role by default.
-        // Students use email/password login with student codes.
-        // Admins and teachers must have their role set manually via the admin panel.
-        const isGoogle = providerData.some(p => p.providerId === "google.com");
-        if (isGoogle) {
-            role = "parent";
-        }
+        // Бүх шинэ бүртгэл анхнаасаа 'student'. Админ/багшийн эрхийг
+        // админ самбараас гараар олгоно (эцэг эхийн эрх системд байхгүй).
 
         if (!docSnap.exists) {
             const fullName = displayName || email?.split("@")[0] || "User";
@@ -61,10 +56,6 @@ export const onUserCreate = functions.auth.user().onCreate(async (user) => {
                 role,
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
             };
-
-            if (role === "parent") {
-                profileData.children = [];
-            }
 
             await userRef.set(profileData);
             console.log(`User profile created for ${uid} with role ${role}`);
@@ -242,45 +233,8 @@ async function assignQuestionsToExam(examId: string, examData: Record<string, un
 // ─── User Profile Triggers ────────────────────────────────────────────────────
 export const onUserProfileCreate = functions.firestore
     .document("users/{userId}")
-    .onCreate(async (snap, context) => {
-        const userData = snap.data();
-        const userId = context.params.userId;
-
+    .onCreate(async () => {
         await updateStat("totalUsers", 1);
-
-        // Auto-link parent ↔ student
-        try {
-            if (userData.role === "student" && userData.parentEmail) {
-                const parentQuery = await db.collection("users")
-                    .where("email", "==", userData.parentEmail)
-                    .where("role", "==", "parent")
-                    .get();
-
-                if (!parentQuery.empty) {
-                    const parentDoc = parentQuery.docs[0];
-                    await parentDoc.ref.update({
-                        children: admin.firestore.FieldValue.arrayUnion(userId),
-                    });
-                    console.log(`Student ${userId} linked to parent ${parentDoc.id}`);
-                }
-            } else if (userData.role === "parent" && userData.email) {
-                const studentsQuery = await db.collection("users")
-                    .where("parentEmail", "==", userData.email)
-                    .where("role", "==", "student")
-                    .get();
-
-                if (!studentsQuery.empty) {
-                    const studentIds = studentsQuery.docs.map(d => d.id);
-                    // arrayUnion with spread works correctly with individual items
-                    await snap.ref.update({
-                        children: admin.firestore.FieldValue.arrayUnion(...studentIds),
-                    });
-                    console.log(`Parent ${userId} linked to students: ${studentIds.join(", ")}`);
-                }
-            }
-        } catch (error) {
-            console.error("Error in automated parent-student linking:", error);
-        }
     });
 
 export const onUserProfileDelete = functions.firestore
@@ -438,26 +392,9 @@ export const onExamUpdate = functions.firestore
         }
     });
 
-// ─── Registration Triggers ────────────────────────────────────────────────────
-/**
- * When a student starts an exam (status: registered → started),
- * notify their parent.
- */
-export const onRegistrationUpdate = functions.firestore
-    .document("registrations/{registrationId}")
-    .onUpdate(async (change) => {
-        const before = change.before.data();
-        const after = change.after.data();
-
-        if (before.status === "registered" && after.status === "started") {
-            const { studentId, examId } = after;
-            await notifyParentOfExamEvent(studentId, examId, "exam_started");
-        }
-    });
-
 // ─── Submission Triggers ──────────────────────────────────────────────────────
 /**
- * Grade submission and notify parent when student submits exam.
+ * Grade submission and notify the student when their score is ready.
  */
 export const onSubmissionCreate = functions.firestore
     .document("submissions/{submissionId}")
@@ -471,15 +408,6 @@ export const onSubmissionCreate = functions.firestore
             // Fetch exam title for notification
             const examDoc = await db.collection("exams").doc(examId).get();
             const examTitle = examDoc.exists ? examDoc.data()?.title || "" : "";
-
-            // Notify parent
-            await notifyParentOfExamEvent(studentId, examId, "score_available", {
-                score,
-                maxScore,
-                percentage,
-                examTitle,
-                studentName,
-            });
 
             // FIX 28: Also notify the student themselves that their score is available.
             try {
@@ -558,75 +486,6 @@ export const onSubmissionFinalized = functions.firestore
             console.error('[difficulty calibration]', err);
         }
     });
-
-// ─── Helper: notify parent ───────────────────────────────────────────────────
-async function notifyParentOfExamEvent(
-    studentId: string,
-    examId: string,
-    type: "exam_started" | "score_available",
-    extra?: {
-        score?: number;
-        maxScore?: number;
-        percentage?: number;
-        examTitle?: string;
-        studentName?: string;
-    }
-) {
-    try {
-        const studentDoc = await db.collection("users").doc(studentId).get();
-        if (!studentDoc.exists) return;
-
-        const studentData = studentDoc.data()!;
-        const parentEmail = studentData.parentEmail as string | undefined;
-        if (!parentEmail) return;
-
-        const studentName = extra?.studentName || `${studentData.lastName || ""} ${studentData.firstName || ""}`.trim();
-
-        let examTitle = extra?.examTitle || "";
-        if (!examTitle) {
-            const examDoc = await db.collection("exams").doc(examId).get();
-            if (examDoc.exists) examTitle = examDoc.data()?.title || "";
-        }
-
-        const parentQuery = await db.collection("users")
-            .where("email", "==", parentEmail)
-            .where("role", "==", "parent")
-            .get();
-
-        if (parentQuery.empty) return;
-
-        const parentId = parentQuery.docs[0].id;
-
-        // FIX 38: sanitize studentName/examTitle so a malicious display name can't
-        // smuggle markup or control chars into parent-facing notification messages.
-        const safeStudentName = sanitizeForNotification(studentName);
-        const safeExamTitle = sanitizeForNotification(examTitle);
-
-        let message = "";
-        if (type === "exam_started") {
-            message = `${safeStudentName} "${safeExamTitle}" шалгалтыг эхлүүллээ.`;
-        } else if (type === "score_available") {
-            message = `${safeStudentName}-ийн "${safeExamTitle}" шалгалтын дүн гарлаа. Оноо: ${extra?.score}/${extra?.maxScore} (${extra?.percentage}%).`;
-        }
-
-        await db.collection("notifications").add({
-            type,
-            recipientId: parentId,
-            studentId,
-            studentName: safeStudentName,
-            examId,
-            examTitle: safeExamTitle,
-            message,
-            score: extra?.score ?? null,
-            maxScore: extra?.maxScore ?? null,
-            percentage: extra?.percentage ?? null,
-            read: false,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-    } catch (error) {
-        console.error(`Error notifying parent (${type}):`, error);
-    }
-}
 
 // ─── Subject Triggers ─────────────────────────────────────────────────────────
 export const onSubjectCreate = functions.firestore

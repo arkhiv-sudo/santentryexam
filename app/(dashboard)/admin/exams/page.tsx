@@ -226,7 +226,11 @@ export default function ExamsPage() {
                                                     </span>
                                                 </td>
                                                 <td className="px-6 py-4 text-gray-500">
-                                                    {new Date(exam.scheduledAt).toLocaleDateString()} {new Date(exam.scheduledAt).toLocaleTimeString()}
+                                                    {exam.startedAt
+                                                        ? `${new Date(exam.startedAt).toLocaleDateString("mn-MN")} ${new Date(exam.startedAt).toLocaleTimeString("mn-MN", { hour: "2-digit", minute: "2-digit" })}-д эхэлсэн`
+                                                        : exam.createdAt
+                                                            ? `${new Date(exam.createdAt).toLocaleDateString("mn-MN")}-нд үүсгэсэн`
+                                                            : "—"}
                                                 </td>
                                                 <td className="px-6 py-4 text-gray-500">{exam.duration} минут</td>
                                                 <td className="px-6 py-4 text-center text-gray-500">

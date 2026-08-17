@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useMemo, useEffect, useRef, useState } from "react";
 import { collection, query, where, getDocs, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { getExamState, EXAM_STATE_LABEL, EXAM_STATE_CLASS } from "@/lib/exam-state";
 import { Exam } from "@/types";
 import { ExamService } from "@/lib/services/exam-service";
 import { toDate } from "@/lib/utils";
@@ -42,8 +43,7 @@ export default function StudentDashboard() {
                 return {
                     id: doc.id,
                     ...data,
-                    scheduledAt: toDate(data.scheduledAt),
-                    registrationEndDate: toDate(data.registrationEndDate)
+                    startedAt: data.startedAt ? toDate(data.startedAt) : null
                 } as Exam;
             });
         },
@@ -167,9 +167,8 @@ export default function StudentDashboard() {
     const upcomingExams = exams.filter(e => {
         const reg = registrations.find(r => r.examId === e.id);
         // FIX 10: Also exclude exams that have already ended — they belong in results, not upcoming.
-        const examEnd = new Date(toDate(e.scheduledAt).getTime() + (e.duration || 0) * 60 * 1000);
-        const nowDate = new Date(now);
-        return (!reg || reg.status !== "completed") && nowDate < examEnd;
+        const state = getExamState(e as unknown as { status?: string; duration?: number; startedAt?: unknown }, now instanceof Date ? now.getTime() : Number(now));
+        return (!reg || reg.status !== "completed") && state !== "finished";
     });
 
     return (
@@ -254,16 +253,13 @@ export default function StudentDashboard() {
                                 const reg = registrations.find(r => r.examId === exam.id);
                                 const isRegistered = !!reg;
                                 const isCompleted = reg?.status === "completed";
-                                const regEnd = new Date(exam.registrationEndDate);
-                                const schedule = new Date(exam.scheduledAt);
-                                const registrationExpired = now > regEnd;
-                                
-                                const examEndTime = new Date(schedule.getTime() + (exam.duration * 60000));
-                                const entryDeadline = new Date(schedule.getTime() + (10 * 60000));
-                                const outOfTime = now >= examEndTime;
+                                // Огноогоор биш ТӨЛӨВӨӨР — шалгалт админ эхлүүлснээр эхэлнэ.
+                                const examState = getExamState(exam as unknown as { status?: string; duration?: number; startedAt?: unknown }, now instanceof Date ? now.getTime() : Number(now));
+                                const registrationExpired = false;
+                                const outOfTime = examState === "finished";
                                 const hasStarted = reg?.status === "started";
-                                const isLate = !hasStarted && now > entryDeadline && now < examEndTime;
-                                const canStart = isRegistered && !isCompleted && now >= schedule && now < examEndTime && (hasStarted || now <= entryDeadline);
+                                const isLate = false;
+                                const canStart = isRegistered && !isCompleted && (examState === "open" || examState === "running");
 
                                 return (
                                     <Card key={exam.id} className="group overflow-hidden border border-slate-100 shadow-sm hover:shadow-md transition-all duration-200 rounded-xl">
@@ -292,7 +288,9 @@ export default function StudentDashboard() {
                                                     <div className="flex flex-wrap gap-3 text-xs text-slate-500">
                                                         <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" />{exam.duration} мин</span>
                                                         <span className="flex items-center gap-1"><ClipboardList className="w-3.5 h-3.5" />{exam.maxQuestions} асуулт</span>
-                                                        <span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5" />{schedule.toLocaleDateString()} {schedule.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                                                        <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full font-bold ${EXAM_STATE_CLASS[examState]}`}>
+                                                            <Calendar className="w-3.5 h-3.5" />{EXAM_STATE_LABEL[examState]}
+                                                        </span>
                                                     </div>
                                                 </div>
 
@@ -345,13 +343,8 @@ export default function StudentDashboard() {
                                                         ) : (
                                                             <div className="bg-blue-50 px-3 py-1.5 rounded-lg flex flex-col items-end gap-0.5 min-w-[120px]">
                                                                 <div className="flex items-center text-blue-500 text-xs font-bold gap-1">
-                                                                    <Clock className="w-3.5 h-3.5" /> Хүлээгдэж байна
+                                                                    <Clock className="w-3.5 h-3.5" /> Багшийг хүлээж байна
                                                                 </div>
-                                                                {formatTimeLeft(schedule, now) && (
-                                                                    <span className="text-[10px] text-blue-400 font-medium">
-                                                                        Эхлэхэд: {formatTimeLeft(schedule, now)}
-                                                                    </span>
-                                                                )}
                                                             </div>
                                                         )
                                                     ) : registrationExpired ? (
@@ -367,11 +360,6 @@ export default function StudentDashboard() {
                                                             >
                                                                 {registerMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Бүртгүүлэх"}
                                                             </Button>
-                                                            {formatTimeLeft(regEnd, now) && (
-                                                                <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">
-                                                                    Хаагдахад: {formatTimeLeft(regEnd, now)}
-                                                                </span>
-                                                            )}
                                                         </div>
                                                     )}
                                                 </div>

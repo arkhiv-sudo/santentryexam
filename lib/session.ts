@@ -45,7 +45,6 @@ export async function requireRole(allowedRoles: UserRole[]) {
         // Redirect to their allowed dashboard or home
         if (user.role === 'admin') redirect('/admin');
         if (user.role === 'teacher') redirect('/teacher');
-        if (user.role === 'parent') redirect('/parent');
         redirect('/student');
     }
 
