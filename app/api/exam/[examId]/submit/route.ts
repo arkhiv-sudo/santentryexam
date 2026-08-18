@@ -68,7 +68,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
         // Хугацааны шалгалт СЕРВЕР талд. Өмнө нь энд огт шалгадаггүй байсан тул
         // цаг дууссаны дараа ч илгээх боломжтой байв. Автомат илгээлт болон
         // сүлжээний саатлыг тооцож 2 минутын тэвчих хугацаа өгнө.
-        const startedAtMs: number | null = examData.startedAt?.toMillis?.() ?? null;
+        // Хугацааг ТУХАЙН СУРАГЧИЙН эхэлсэн мөчөөс тооцно (бүртгэл дээрх
+        // `startedAt`). Хуучин шалгалтуудад шалгалтын түвшний `startedAt`
+        // байж болох тул түүнийг нөөц болгож үлдээв.
+        const regForTime = await adminDb.collection("registrations")
+            .where("examId", "==", examId).where("studentId", "==", studentId).limit(1).get();
+        const startedAtMs: number | null =
+            (regForTime.empty ? null : regForTime.docs[0].data().startedAt?.toMillis?.() ?? null)
+            ?? examData.startedAt?.toMillis?.() ?? null;
         if (!adminOverride && startedAtMs) {
             const GRACE_MS = 2 * 60 * 1000;
             const examEndMs = startedAtMs + (examData.duration || 60) * 60 * 1000;

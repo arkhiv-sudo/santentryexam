@@ -7,7 +7,7 @@ import { Registration, Exam, UserProfile } from "@/types";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { toast } from "sonner";
-import { Clock, ShieldAlert, MonitorPlay, LogOut, CheckCircle, RotateCcw, FileText, Download, Info, Play, BellRing, UserCheck, Hourglass, DoorOpen } from "lucide-react";
+import { Clock, ShieldAlert, MonitorPlay, LogOut, CheckCircle, RotateCcw, FileText, Download, Info, UserCheck } from "lucide-react";
 import { useChangeFlash, useFlipRows, usePrefersReducedMotion } from "@/lib/row-animation";
 import { useConfirm } from "@/components/providers/ModalProvider";
 import { useRouter } from "next/navigation";
@@ -77,14 +77,6 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
     const [isExtending, setIsExtending] = useState(false);
     const [forceSubmittingId, setForceSubmittingId] = useState<string | null>(null);
     const [detailFor, setDetailFor] = useState<{ studentId: string; name: string } | null>(null);
-    /** Шалгалтыг админ эхлүүлсэн мөч (сервер дата, шууд сонсогчоор шинэчлэгдэнэ). */
-    const [startedAt, setStartedAt] = useState<number | null>(
-        (exam as unknown as { startedAt?: Date | string | null }).startedAt
-            ? new Date((exam as unknown as { startedAt: Date | string }).startedAt).getTime()
-            : null,
-    );
-    const [startingExam, setStartingExam] = useState(false);
-    const [nudgingId, setNudgingId] = useState<string | null>(null);
     const confirm = useConfirm();
     const router = useRouter();
     const { user: adminUser } = useAuth();
@@ -153,14 +145,6 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
             setRegistrations(regs);
         });
 
-        // Шалгалтын доккумент — админ эхлүүлмэгц бүх төлөв шинэчлэгдэнэ
-        const unsubExam = onSnapshot(doc(db, "exams", examId), d => {
-            if (d.exists()) {
-                const st = (d.data().startedAt as unknown as { toMillis?: () => number })?.toMillis?.() ?? null;
-                setStartedAt(st);
-            }
-        });
-
         // Live listen to retake_requests for this exam
         const qReq = query(collection(db, "retake_requests"), where("examId", "==", examId));
         const unsubReq = onSnapshot(qReq, (snap) => {
@@ -196,78 +180,11 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
             unsubReg();
             unsubReq();
             unsubRes();
-            unsubExam();
         };
     }, [examId]);
 
-    /** Шалгалтыг БҮГДЭД зэрэг эхлүүлэх. */
-    const handleStartExam = async () => {
-        const readyCount = registrations.filter(r => r.status === "ready").length;
-        const notReady = registrations.length - readyCount;
-        const ok = await confirm({
-            title: "Шалгалтыг бүгдэд эхлүүлэх",
-            message: notReady > 0
-                ? `Бэлэн болсон ${readyCount} сурагчид шалгалт эхэлнэ. Бэлэн болоогүй ${notReady} сурагч ОРЖ ЧАДАХГҮЙ (дараа нь та тусад нь оруулж болно). Үргэлжлүүлэх үү?`
-                : `${readyCount} сурагч бүгд бэлэн байна. Шалгалтыг эхлүүлэх үү? Цаг тэр дороос тоологдоно.`,
-            confirmLabel: "Эхлүүлэх",
-            variant: notReady > 0 ? "destructive" : "default",
-        });
-        if (!ok) return;
-        setStartingExam(true);
-        try {
-            const res = await fetch(`/api/admin/exams/${examId}/control`, {
-                method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ action: "start" }),
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || "Эхлүүлэхэд алдаа гарлаа");
-            toast.success(`Шалгалт эхэллээ — ${data.started} сурагч оров`);
-        } catch (err) {
-            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
-        } finally {
-            setStartingExam(false);
-        }
-    };
 
-    /** Бэлэн болоогүй сурагчид сануулга илгээх (дэлгэц дүүрэн анхааруулга + дуу). */
-    const handleNudge = async (studentId: string, name: string) => {
-        setNudgingId(studentId);
-        try {
-            const res = await fetch(`/api/admin/exams/${examId}/control`, {
-                method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ action: "nudge", studentId }),
-            });
-            if (!res.ok) throw new Error((await res.json()).error || "Алдаа");
-            toast.success(`${name} — сануулга илгээлээ`);
-        } catch (err) {
-            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
-        } finally {
-            setNudgingId(null);
-        }
-    };
 
-    /** Хоцорсон сурагчийг тусгайлан оруулах. */
-    const handleAdmit = async (studentId: string, name: string) => {
-        const ok = await confirm({
-            title: "Хоцорсон сурагчийг оруулах",
-            message: `${name}-г шалгалт руу оруулах уу? Түүнд үлдсэн хугацаа л ногдоно.`,
-            confirmLabel: "Оруулах",
-        });
-        if (!ok) return;
-        setNudgingId(studentId);
-        try {
-            const res = await fetch(`/api/admin/exams/${examId}/control`, {
-                method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ action: "admit", studentId }),
-            });
-            if (!res.ok) throw new Error((await res.json()).error || "Алдаа");
-            toast.success(`${name} — оруулав`);
-        } catch (err) {
-            toast.error(err instanceof Error ? err.message : "Алдаа гарлаа");
-        } finally {
-            setNudgingId(null);
-        }
-    };
 
     /** Энэ шалгалтын бүх сурагчийн явц + дүнг CSV болгон татах. */
     const exportResultsCsv = () => {
@@ -526,9 +443,7 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                         Шууд хяналт: {exam.title}
                     </h1>
                     <p className="text-slate-500 font-medium">
-                        {startedAt
-                            ? `${new Date(startedAt).toLocaleTimeString("mn-MN", { hour: "2-digit", minute: "2-digit" })}-д эхэлсэн`
-                            : "Хараахан эхлээгүй"} • {exam.duration} минут
+                        Нээлттэй — сурагч бүр өөрөө эхлүүлнэ • {exam.duration} минут
                     </p>
                 </div>
                 <Button variant="outline" onClick={() => router.push("/admin/exams")}>
@@ -589,72 +504,6 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                         ))}
                     </div>
                 </div>
-            )}
-
-            {/* ── Хүлээх танхим: шалгалт эхлэхээс ӨМНӨ ────────────────────── */}
-            {!startedAt && (
-                <Card className="border-0 shadow-xl ring-2 ring-indigo-300 overflow-hidden">
-                    <div className="bg-linear-to-r from-indigo-600 to-blue-600 px-6 py-5 flex flex-wrap items-center justify-between gap-4">
-                        <div className="text-white">
-                            <h2 className="text-xl font-black flex items-center gap-2">
-                                <Hourglass className="w-5 h-5" /> Хүлээх танхим
-                            </h2>
-                            <p className="text-blue-100 text-sm mt-1">
-                                Сурагчид «Бэлэн боллоо» дарж хүлээж байна. Та эхлүүлэхэд бүгдэд <strong>зэрэг</strong> эхэлнэ.
-                            </p>
-                        </div>
-                        <div className="flex items-center gap-4">
-                            <div className="text-center text-white">
-                                <div className="text-3xl font-black">
-                                    {registrations.filter(r => r.status === "ready").length}
-                                    <span className="text-blue-200">/{registrations.length}</span>
-                                </div>
-                                <div className="text-[10px] font-bold uppercase tracking-wider text-blue-100">Бэлэн</div>
-                            </div>
-                            <Button
-                                onClick={handleStartExam}
-                                disabled={startingExam || registrations.filter(r => r.status === "ready").length === 0}
-                                className="bg-emerald-500 hover:bg-emerald-600 text-white font-black h-14 px-8 rounded-2xl text-lg gap-2 shadow-lg disabled:opacity-50"
-                            >
-                                <Play className="w-5 h-5" /> {startingExam ? "Эхлүүлж байна..." : "Бүгдэд эхлүүлэх"}
-                            </Button>
-                        </div>
-                    </div>
-
-                    <CardContent className="p-4">
-                        {registrations.length === 0 ? (
-                            <p className="text-center text-slate-500 py-6 font-medium">Сурагч хараахан ороогүй байна…</p>
-                        ) : (
-                            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                                {sortedRegistrations.map(reg => {
-                                    const u = usersMap[reg.studentId] || {};
-                                    const name = `${u.lastName || ""} ${u.firstName || ""}`.trim() || reg.studentId;
-                                    const ready = reg.status === "ready";
-                                    return (
-                                        <div key={reg.id} className={`flex items-center justify-between gap-2 rounded-xl border-2 p-3 ${ready ? "border-emerald-300 bg-emerald-50" : "border-amber-200 bg-amber-50/60"}`}>
-                                            <div className="min-w-0">
-                                                <p className="font-bold text-slate-900 truncate">{name}</p>
-                                                <p className={`text-xs font-bold flex items-center gap-1 ${ready ? "text-emerald-700" : "text-amber-700"}`}>
-                                                    {ready ? <><UserCheck className="w-3 h-3" /> Бэлэн</> : <><Hourglass className="w-3 h-3" /> Бэлэн болоогүй</>}
-                                                </p>
-                                            </div>
-                                            {!ready && (
-                                                <Button
-                                                    size="sm" variant="outline"
-                                                    disabled={nudgingId === reg.studentId}
-                                                    onClick={() => handleNudge(reg.studentId, name)}
-                                                    className="gap-1 text-amber-700 border-amber-300 hover:bg-amber-100 shrink-0"
-                                                >
-                                                    <BellRing className="w-3.5 h-3.5" /> Сануулах
-                                                </Button>
-                                            )}
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-                    </CardContent>
-                </Card>
             )}
 
             {/* Дүнгийн товчлол — Statistics Summary */}
@@ -901,18 +750,6 @@ export default function MonitorClient({ examId, exam, usersMap }: MonitorClientP
                                             </td>
                                             <td className="px-6 py-4 text-right">
                                                 <div className="flex justify-end gap-1">
-                                                    {startedAt && reg.status === "registered" && (
-                                                        <Button
-                                                            variant="ghost"
-                                                            size="sm"
-                                                            disabled={nudgingId === reg.studentId}
-                                                            onClick={() => handleAdmit(reg.studentId, `${user.lastName || ""} ${user.firstName || ""}`.trim() || reg.studentId)}
-                                                            className="text-indigo-600 hover:bg-indigo-50 gap-1"
-                                                            title="Хоцорсон сурагчийг шалгалт руу оруулах"
-                                                        >
-                                                            <DoorOpen className="w-3.5 h-3.5" /> Оруулах
-                                                        </Button>
-                                                    )}
                                                     <Button
                                                         variant="ghost"
                                                         size="sm"

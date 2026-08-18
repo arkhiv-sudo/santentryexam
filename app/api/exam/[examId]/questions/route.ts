@@ -45,23 +45,10 @@ export async function GET(
         return NextResponse.json({ error: "Шалгалт нийтлэгдээгүй байна" }, { status: 403 });
     }
 
-    // 4. Шалгалт нь АДМИН эхлүүлсний дараа л явагдана. Цаг нь `startedAt`-аас
-    //    тоологдох тул бүх сурагчид ЯГ ижил хугацаа ногдоно. `scheduledAt` нь
-    //    зөвхөн товлосон цаг (мэдээллийн зорилготой).
+    // 4. Шалгалт ҮРГЭЛЖ НЭЭЛТТЭЙ. Хугацаа нь ТУХАЙН СУРАГЧИЙН эхэлсэн
+    //    мөчөөс (`registrations.startedAt`) тоологдоно — доор шалгана.
     const now = Date.now();
-    const startedAt: number | null = exam.startedAt?.toMillis?.() ?? null;
     const durationMs: number = (exam.duration || 60) * 60 * 1000;
-
-    if (!startedAt) {
-        return NextResponse.json({
-            error: "Шалгалт хараахан эхлээгүй байна. Багш эхлүүлэхийг хүлээнэ үү.",
-            notStarted: true,
-        }, { status: 403 });
-    }
-    const examEnd = startedAt + durationMs;
-    if (now > examEnd) {
-        return NextResponse.json({ error: "Шалгалтын хугацаа дууссан" }, { status: 403 });
-    }
 
     // 5. Check student is registered
     const regQuery = await adminDb
@@ -102,15 +89,17 @@ export async function GET(
         return NextResponse.json({ error: "Шалгалтыг аль хэдийн өгсөн байна" }, { status: 403 });
     }
 
-    // Шалгалт эхлэхээс өмнө «Бэлэн боллоо» дараагүй сурагч орж чадахгүй.
-    // Админ тусгайлан оруулсан (`admittedLate`) эсвэл дахин өгөхийг зөвшөөрсөн
-    // (`retakeApprovedAt`) тохиолдолд л үл хамаарна.
-    const admitted = !!reg.admittedLate || !!reg.retakeApprovedAt;
-    if (!admitted && reg.status !== "started" && reg.status !== "ready") {
+    // Сурагчийн ӨӨРИЙН эхэлсэн цаг. Дараагүй бол шалгалт хараахан эхлээгүй
+    // гэж үзээд танилцуулга дэлгэц рүү буцаана.
+    const startedAt: number | null = reg.startedAt?.toMillis?.() ?? null;
+    if (!startedAt) {
         return NextResponse.json({
-            error: "Шалгалт эхлэхээс өмнө «Бэлэн боллоо» товчийг дараагүй тул орох боломжгүй. Багш/админд хандана уу.",
-            needsAdmission: true,
+            error: "Шалгалт хараахан эхлээгүй байна",
+            notStarted: true,
         }, { status: 403 });
+    }
+    if (now > startedAt + durationMs) {
+        return NextResponse.json({ error: "Таны шалгалтын хугацаа дууссан" }, { status: 403 });
     }
 
     // 6. Fetch questions (from embedded snapshot or fallback to Firestore)

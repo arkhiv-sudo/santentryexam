@@ -161,7 +161,9 @@ export async function POST(request: NextRequest) {
                         duration,
                         started: !!startedAt,
                         startedAt,
-                        finished: !!startedAt && now >= startedAt + duration * 60_000,
+                        // Шалгалт үргэлж нээлттэй — хугацаа нь сурагч бүрд
+                        // өөрийн эхэлсэн мөчөөс тоологддог тул энд шүүхгүй.
+                        finished: false,
                     };
                 })
                 .filter(e => !e.finished)

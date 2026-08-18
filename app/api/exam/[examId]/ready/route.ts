@@ -7,9 +7,12 @@ import { checkOrigin } from "@/lib/csrf";
 /**
  * POST /api/exam/[examId]/ready
  *
- * Сурагч «Бэлэн боллоо» дарахад дуудагдана. Бүртгэлийг `ready` төлөвт
- * оруулж, админы хүснэгтэд ногоон болж харагдана. Асуулт ЭНД ӨГӨХГҮЙ —
- * шалгалт зөвхөн админ «Бүгдэд эхлүүлэх» дарсны дараа эхэлнэ.
+ * Сурагч «Шалгалт эхлэх» дарахад дуудагдана. ТУХАЙН СУРАГЧИЙН шалгалт
+ * яг тэр мөчид эхэлж, хугацаа нь өөрийнх нь `startedAt`-аас тоологдоно
+ * (админы зөвшөөрөл шаардлагагүй, шалгалт үргэлж нээлттэй).
+ *
+ * Аль хэдийн эхэлсэн бол хуучин `startedAt`-ыг ХЭВЭЭР үлдээж буцаана —
+ * ингэснээр хуудсаа сэргээх, дахин орох үед цаг тэглэгдэхгүй.
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ examId: string }> }) {
     const origin = checkOrigin(req);
@@ -38,30 +41,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
     if (regSnap.empty) return NextResponse.json({ error: "Шалгалтад бүртгэлгүй байна" }, { status: 403 });
 
     const reg = regSnap.docs[0];
-    const status = reg.data().status as string;
-    if (status === "completed") {
+    const data = reg.data();
+    if (data.status === "completed") {
         return NextResponse.json({ error: "Та энэ шалгалтыг аль хэдийн өгсөн байна" }, { status: 403 });
     }
 
-    // Шалгалт аль хэдийн эхэлсэн бол: зөвхөн өмнө нь бэлэн байсан эсвэл админ
-    // тусгайлан оруулсан сурагч л үргэлжлүүлнэ.
-    const alreadyStarted = !!exam.startedAt;
-    if (alreadyStarted && status === "registered" && !reg.data().admittedLate) {
-        return NextResponse.json({
-            error: "Шалгалт аль хэдийн эхэлсэн байна. Багш/админд хандаж оруулах хүсэлт тавина уу.",
-            needsAdmission: true,
-        }, { status: 403 });
+    // Аль хэдийн эхэлсэн бол цагийг нь ХЭВЭЭР үлдээнэ
+    const existing: number | null = data.startedAt?.toMillis?.() ?? null;
+    if (existing) {
+        return NextResponse.json({ success: true, status: "started", startedAt: existing, resumed: true });
     }
 
-    await reg.ref.update({
-        status: alreadyStarted ? "started" : "ready",
-        readyAt: Timestamp.now(),
-        ...(alreadyStarted ? { startedAt: Timestamp.now() } : {}),
-    });
-
-    return NextResponse.json({
-        success: true,
-        status: alreadyStarted ? "started" : "ready",
-        examStartedAt: exam.startedAt?.toMillis?.() ?? null,
-    });
+    const now = Timestamp.now();
+    await reg.ref.update({ status: "started", startedAt: now });
+    return NextResponse.json({ success: true, status: "started", startedAt: now.toMillis(), resumed: false });
 }

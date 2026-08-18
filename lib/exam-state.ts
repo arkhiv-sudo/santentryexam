@@ -25,13 +25,13 @@ export function toMillis(value: unknown): number | null {
     return Number.isNaN(d.getTime()) ? null : d.getTime();
 }
 
-export function getExamState(exam: ExamStateInput, now: number = Date.now()): ExamState {
+export function getExamState(exam: ExamStateInput, _now: number = Date.now()): ExamState {
     if (exam.status === "archived") return "archived";
     if (exam.status !== "published") return "draft";
-    const started = toMillis(exam.startedAt);
-    if (!started) return "open";
-    const end = started + (exam.duration || 60) * 60 * 1000;
-    return now < end ? "running" : "finished";
+    // Шалгалт нийтлэгдсэн бол ҮРГЭЛЖ НЭЭЛТТЭЙ. Хугацаа нь сурагч бүрийн
+    // өөрийн эхэлсэн мөчөөс тоологддог тул шалгалтын түвшинд «явагдаж
+    // байна / дууссан» гэсэн төлөв байхгүй.
+    return "open";
 }
 
 /** Сурагч энэ шалгалт руу орох боломжтой юу (хүлээх танхим эсвэл явц). */

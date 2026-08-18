@@ -14,6 +14,8 @@ import { logAdmin, getRequestMeta } from "@/lib/audit-log";
  *           тоологдоно (сурагч бүрд ижил).
  *  nudge  — бэлэн болоогүй сурагчид сануулга (дэлгэц дүүрэн анхааруулга + дуу).
  *  admit  — эхэлсний дараа хоцорсон сурагчийг тусгайлан оруулах.
+ *  reset  — шалгалтыг тэглэж «Нээлттэй» болгох (дахин эхлүүлэх). Илгээлт,
+ *           дүн устаж, бүх бүртгэл «бүртгэлтэй» төлөвт буцна.
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ examId: string }> }) {
     const origin = checkOrigin(req);
@@ -93,6 +95,52 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
         return NextResponse.json({ success: true });
     }
 
+    // ── Шалгалтыг ТЭГЛЭЖ дахин эхлүүлэх боломжтой болгох ─────────────
+    // `startedAt`-ыг арилгаснаар шалгалт «Нээлттэй» төлөвт буцаж, сурагчид
+    // дахин «Бэлэн боллоо» дарж хүлээх танхимд орно. Өмнөх ажиллагааны
+    // илгээлт, дүн устана (эс бөгөөс «аль хэдийн өгсөн» хамгаалалт хаана).
+    if (body.action === "reset") {
+        const [regs, subs, results] = await Promise.all([
+            adminDb.collection("registrations").where("examId", "==", examId).get(),
+            adminDb.collection("submissions").where("examId", "==", examId).get(),
+            adminDb.collection("exam_results").where("examId", "==", examId).get(),
+        ]);
+
+        const batch = adminDb.batch();
+        batch.update(examRef, { startedAt: FieldValue.delete(), startedBy: FieldValue.delete(), totalParticipants: 0 });
+        regs.docs.forEach(d => batch.update(d.ref, {
+            status: "registered",
+            startedAt: null,
+            completedAt: null,
+            draftAnswers: {},
+            violations: 0,
+            forceSubmitted: false,
+            readyAt: FieldValue.delete(),
+            nudgedAt: FieldValue.delete(),
+            nudgeCount: 0,
+            admittedLate: FieldValue.delete(),
+        }));
+        subs.docs.forEach(d => batch.delete(d.ref));
+        results.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+
+        await logAdmin({
+            action: "bulk_action",
+            actorUid: admin.uid,
+            actorRole: admin.role,
+            targetResource: `exams/${examId}`,
+            metadata: { change: "exam_reset", registrations: regs.size, submissionsDeleted: subs.size, resultsDeleted: results.size },
+            ...meta,
+        });
+
+        return NextResponse.json({
+            success: true,
+            reset: regs.size,
+            submissionsDeleted: subs.size,
+            resultsDeleted: results.size,
+        });
+    }
+
     // ── Хоцорсон сурагчийг оруулах ───────────────────────────────────
     if (body.action === "admit") {
         if (!body.studentId) return NextResponse.json({ error: "studentId шаардлагатай" }, { status: 400 });
@@ -118,5 +166,5 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
         return NextResponse.json({ success: true });
     }
 
-    return NextResponse.json({ error: "action нь start | nudge | admit байх ёстой" }, { status: 400 });
+    return NextResponse.json({ error: "action нь start | nudge | admit | reset байх ёстой" }, { status: 400 });
 }

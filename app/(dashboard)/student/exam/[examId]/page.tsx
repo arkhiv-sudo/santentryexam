@@ -178,16 +178,11 @@ export default function ExamPage() {
         const unsub = onSnapshot(doc(db, "exams", examId), d => {
             if (!d.exists()) return;
             const e = d.data();
-            const startedMs = e.startedAt?.toMillis?.() ?? null;
             setExamInfo({
                 title: e.title || "Шалгалт",
                 duration: e.duration || 60,
                 grade: e.grade || "",
                 scheduledAt: e.scheduledAt?.toMillis?.() ?? null,
-            });
-            setExamStartedAt(prev => {
-                if (!prev && startedMs) toast.success("Шалгалт эхэллээ!");
-                return startedMs;
             });
         }, err => console.error("[exam listener]", err));
         return () => unsub();
@@ -294,6 +289,9 @@ export default function ExamPage() {
                     : new Date(reg.startedAt as unknown as string | number).getTime();
                 if (!Number.isNaN(startedMs)) {
                     regStartedAtRef.current = startedMs;
+                    // Сурагч аль хэдийн эхэлсэн бол цагийг нь үргэлжлүүлнэ
+                    setExamStartedAt(startedMs);
+                    setIsReady(true);
                 }
             }
         }).catch(() => {});
@@ -649,8 +647,9 @@ export default function ExamPage() {
     };
 
     // ── Start exam ─────────────────────────────────────────────────────────
-    /** «Бэлэн боллоо» — бүтэн дэлгэц асааж, серверт бэлэн болсноо мэдэгдэнэ.
-     *  Шалгалт ЭНД эхлэхгүй: админ «Бүгдэд эхлүүлэх» дарахыг хүлээнэ. */
+    /** «Шалгалт эхлэх» — бүтэн дэлгэц асааж, ЯГ ТЭР МӨЧИД шалгалтаа эхлүүлнэ.
+     *  Хугацаа сурагчийн өөрийн эхэлсэн цагаас тоологдоно (админы зөвшөөрөл
+     *  шаардлагагүй — шалгалт үргэлж нээлттэй). */
     const handleReady = async () => {
         if (!user) return;
 
@@ -665,7 +664,8 @@ export default function ExamPage() {
                 return;
             }
             setIsReady(true);
-            toast.success("Бэлэн боллоо. Багш эхлүүлэхийг хүлээнэ үү.");
+            if (data.startedAt) setExamStartedAt(data.startedAt);
+            toast.success(data.resumed ? "Шалгалт үргэлжилж байна" : "Шалгалт эхэллээ!");
         } catch (err) {
             console.error("[ready]", err);
             toast.error("Сервертэй холбогдож чадсангүй");
@@ -960,76 +960,6 @@ export default function ExamPage() {
             );
         }
 
-        // ── Бэлэн болсон → ХҮЛЭЭХ ТАНХИМ ───────────────────────────────────
-        if (isReady) {
-            return (
-                <div className="min-h-screen flex items-center justify-center bg-linear-to-br from-blue-600 via-indigo-600 to-purple-700 p-4">
-                    {nudgeOverlay}
-                    <div className="w-full max-w-lg text-center text-white space-y-8">
-                        <div className="w-24 h-24 rounded-full bg-white/15 backdrop-blur flex items-center justify-center mx-auto ring-4 ring-white/25">
-                            <CheckCircle className="w-12 h-12 text-emerald-300" />
-                        </div>
-                        <div>
-                            <h1 className="text-4xl font-black">Бэлэн боллоо!</h1>
-                            <p className="text-blue-100 text-lg mt-3">
-                                Багш шалгалтыг эхлүүлэхийг хүлээж байна…
-                            </p>
-                        </div>
-
-                        <div className="bg-white/12 backdrop-blur rounded-3xl p-6 space-y-3 text-left">
-                            <div className="flex justify-between border-b border-white/20 pb-2">
-                                <span className="text-blue-100">Шалгалт</span>
-                                <span className="font-bold">{info.title}</span>
-                            </div>
-                            <div className="flex justify-between border-b border-white/20 pb-2">
-                                <span className="text-blue-100">Үргэлжлэх</span>
-                                <span className="font-bold">{info.duration} минут</span>
-                            </div>
-                            <div className="flex justify-between">
-                                <span className="text-blue-100">Таны нэр</span>
-                                <span className="font-bold">{profile ? `${profile.lastName} ${profile.firstName}` : ""}</span>
-                            </div>
-                        </div>
-
-                        <div className="flex items-center justify-center gap-3 text-blue-100">
-                            <Loader2 className="w-5 h-5 animate-spin" />
-                            <span className="font-bold">Эхлэхэд шалгалт автоматаар нээгдэнэ — хуудсаа хаахгүй байна уу</span>
-                        </div>
-
-                        {!isFullscreen && (
-                            <Button onClick={handleReenterFullscreen} className="bg-white text-indigo-700 hover:bg-blue-50 font-bold gap-2">
-                                <Maximize className="w-4 h-4" /> Бүтэн дэлгэц рүү шилжих
-                            </Button>
-                        )}
-                    </div>
-                </div>
-            );
-        }
-
-        // ── Бэлэн болоогүй → танилцуулга + дүрэм ───────────────────────────
-        if (examStartedAt) {
-            return (
-                <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-                    <Card className="max-w-md w-full shadow-2xl">
-                        <CardHeader className="bg-amber-500 text-white rounded-t-xl p-8 text-center">
-                            <AlertTriangle className="w-12 h-12 mx-auto mb-4" />
-                            <CardTitle className="text-2xl font-black">Шалгалт эхэлчихсэн байна</CardTitle>
-                        </CardHeader>
-                        <CardContent className="p-8 text-center space-y-5">
-                            <p className="text-slate-600 font-medium">
-                                Та «Бэлэн боллоо» товчийг дарж амжаагүй тул шалгалт руу орох боломжгүй.
-                                Багш/админд хандаж оруулах хүсэлт тавина уу.
-                            </p>
-                            <Button onClick={() => window.location.reload()} className="w-full bg-blue-600 text-white h-12 rounded-xl">
-                                Дахин шалгах
-                            </Button>
-                            <Button onClick={() => router.push("/student")} variant="outline" className="w-full h-12 rounded-xl">Буцах</Button>
-                        </CardContent>
-                    </Card>
-                </div>
-            );
-        }
-
         return (
             <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
                 {nudgeOverlay}
@@ -1059,9 +989,8 @@ export default function ExamPage() {
                                 <AlertTriangle className="w-4 h-4" /> Анхааруулга
                             </p>
                             <ul className="text-sm text-amber-700 space-y-1 list-disc list-inside">
-                                <li><strong>«Бэлэн боллоо»</strong> дарсны дараа бүтэн дэлгэц болж, багш эхлүүлэхийг хүлээнэ</li>
-                                <li>Багш эхлүүлэхэд <strong>бүх сурагчид зэрэг</strong> шалгалт эхэлнэ</li>
-                                <li>Эхэлсний дараа бэлэн болоогүй хүн <strong>орох боломжгүй</strong></li>
+                                <li><strong>«Шалгалт эхлэх»</strong> дарсан мөчөөс таны хугацаа эхэлнэ</li>
+                                <li>Дэлгэц бүтэн дэлгэц (fullscreen) болно</li>
                                 <li>Шалгалт эхэлсэний дараа <strong>{MAX_VIOLATIONS} удаа</strong> өөр цонх/таб нээвэл автоматаар дуусаж илгээгдэнэ</li>
                                 <li>Хуулах (Ctrl+C / Ctrl+V), хэвлэх (Ctrl+P), хөгжүүлэгчийн хэрэгсэл хориглоно</li>
                                 <li>Хугацаа дуусахад хариулт автоматаар илгээгдэнэ</li>
@@ -1079,7 +1008,7 @@ export default function ExamPage() {
                             disabled={!acknowledgedRules || readySubmitting}
                             className={`w-full h-14 bg-linear-to-r from-emerald-600 to-green-600 text-white font-black text-lg rounded-2xl shadow-xl ${(!acknowledgedRules || readySubmitting) ? "opacity-50 cursor-not-allowed" : ""}`}
                         >
-                            {readySubmitting ? "Бүртгэж байна..." : "Бэлэн боллоо"}
+                            {readySubmitting ? "Эхлүүлж байна..." : "Шалгалт эхлэх"}
                         </Button>
                     </CardContent>
                 </Card>
