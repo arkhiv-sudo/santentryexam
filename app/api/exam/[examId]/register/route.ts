@@ -43,11 +43,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
         return NextResponse.json({ error: "Шалгалт нийтлэгдээгүй байна" }, { status: 403 });
     }
 
-    // Огноогоор биш төлөвөөр: эхэлсэн бөгөөд хугацаа нь дууссан бол л хаана.
-    const startedAt: number | null = exam.startedAt?.toMillis?.() ?? null;
-    if (startedAt && Date.now() > startedAt + (exam.duration || 60) * 60 * 1000) {
-        return NextResponse.json({ error: "Шалгалтын хугацаа дууссан" }, { status: 403 });
-    }
+    // Шалгалт нийтлэгдсэн бол ҮРГЭЛЖ НЭЭЛТТЭЙ — бүртгэхэд хугацааны хаалт
+    // байхгүй. Хугацаа нь сурагч бүрийн ӨӨРИЙН эхэлсэн мөчөөс тоологддог тул
+    // шалгалтын түвшний `startedAt`-ыг (хуучин загварын үлдэгдэл) үл хэрэгснэ.
 
     // Already registered?
     const existing = await adminDb.collection("registrations")
