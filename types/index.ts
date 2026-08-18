@@ -134,7 +134,7 @@ export interface ExamQuestion {
     /** Хариултын ТӨРӨЛ (утга нь БИШ) — сервер тал хариултын түлхүүрээс тооцож
      *  дамжуулна. Клиент үүнийг ашиглан тоон хариултад зөвхөн тоо оруулдаг
      *  талбар харуулна. Зөв хариу энд ямар ч байдлаар задрахгүй. */
-    answerFormat?: 'number' | 'fraction' | 'text';
+    answerFormat?: 'number' | 'fraction' | 'numberList' | 'text';
 }
 
 export interface Registration {

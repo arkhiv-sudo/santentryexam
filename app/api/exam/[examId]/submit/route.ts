@@ -247,8 +247,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exa
                                  studentAns.replace(/\s+/g, '').toLowerCase() === correctAnsClean.replace(/\s+/g, ''))
                                 && correctAnsClean !== "";
 
-                // Input хэлбэрийн хувьд илүү уян шалгалт
-                if (!isCorrect && qType === "input" && correctAnsClean !== "") {
+                // ── Олон тоон хариу (жагсаалт) ────────────────────────────
+                // Зөв хариу нь 2+ тоо бол ЗӨВХӨН олонлогоор жиших ба доорх
+                // ганц тоон харьцуулалт руу УНАХГҮЙ. Эс бөгөөс «256,258,268»
+                // нь parseFloat-аар 256.258 болж, дутуу хариу ч зөв тоологдоно.
+                const toNumberList = (raw: string): number[] => stripFormatting(raw)
+                    .replace(/[;]/g, ",")
+                    .split(/[,\s]+/)
+                    .map(part => toNumber(part))
+                    .filter((n): n is number => n !== null)
+                    .sort((a, b) => a - b);
+                const correctList = toNumberList(String(correctAns));
+                const isListAnswer = correctList.length >= 2;
+
+                if (isListAnswer) {
+                    if (!isCorrect) {
+                        const studentList = toNumberList(studentAns);
+                        isCorrect = studentList.length === correctList.length &&
+                            studentList.every((n, idx) => Math.abs(n - correctList[idx]) < 0.001);
+                    }
+                }
+
+                // Input хэлбэрийн хувьд илүү уян шалгалт (зөвхөн ганц утгатай хариунд)
+                if (!isCorrect && !isListAnswer && qType === "input" && correctAnsClean !== "") {
                     const studentN = normalizeForInput(studentAns);
                     const correctN = normalizeForInput(String(correctAns));
                     if (studentN === correctN && studentN !== '') {

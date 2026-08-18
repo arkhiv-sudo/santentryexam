@@ -21,6 +21,34 @@ import { requestFullscreen, exitFullscreen, isFullscreenActive, onFullscreenChan
 
 const AUTOSAVE_KEY = (examId: string, uid: string) => `exam_draft_${examId}_${uid}`;
 
+/**
+ * Асуултын дарааллыг САНАМСАРГҮЙ болгоно — сурагч бүрд өөр.
+ *
+ * Үр (seed) нь сурагчийн uid + шалгалтын id-аас гардаг тул хуудсаа сэргээхэд
+ * дараалал ӨӨРЧЛӨГДӨХГҮЙ (сурагч төөрөхгүй). Хариултууд асуултын id-гаар
+ * хадгалагддаг тул дүгнэлтэд ямар ч нөлөөгүй.
+ */
+function seededShuffle<T>(items: T[], seed: string): T[] {
+    let h = 2166136261;
+    for (let i = 0; i < seed.length; i++) {
+        h ^= seed.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+    }
+    const rand = () => {
+        h += 0x6D2B79F5;
+        let t = h;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const a = [...items];
+    for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+}
+
 /** Тоон хариулт хүлээж буй асуулт эсэх. Сервер `answerFormat`-ыг хариултын
  *  түлхүүрээс тооцож дамжуулдаг (зөв хариу задардаггүй). */
 /** Админаас сануулга ирэхэд богино дуут дохио (файлгүй, WebAudio). */
@@ -46,8 +74,11 @@ function playAlertSound() {
 }
 
 const isNumericAnswer = (q: ExamQuestion) =>
-    q.type !== "multiple_choice" && (q.answerFormat === "number" || q.answerFormat === "fraction");
+    q.type !== "multiple_choice" &&
+    (q.answerFormat === "number" || q.answerFormat === "fraction" || q.answerFormat === "numberList");
 const MAX_VIOLATIONS = 3;
+/** Хэдэн минут үлдэхэд сурагчид анхааруулах вэ. */
+const TIME_WARNINGS = [10, 5, 1];
 
 interface ExamMeta {
     title: string;
@@ -136,6 +167,8 @@ export default function ExamPage() {
     const fullscreenEngagedRef = useRef(false);
     /** Сүүлд харсан сануулгын мөч — давхар дуугаргахгүйн тулд. */
     const lastNudgeRef = useRef<number>(0);
+    /** Хугацааны анхааруулга аль хязгаарт өгсөнийг санана (давхар өгөхгүй). */
+    const warnedRef = useRef<Set<number>>(new Set());
 
     useEffect(() => { answersRef.current = answers; }, [answers]);
 
@@ -309,7 +342,8 @@ export default function ExamPage() {
                 // A2: Don't pre-shuffle options here on every fetch. We compute and cache
                 // a stable shuffled order per-question via getShuffledOptions() below so
                 // that the student sees the same option order across re-renders.
-                setQuestions(data.questions as ExamQuestion[]);
+                // Асуултын дарааллыг сурагч бүрд өөрөөр холино (тогтвортой үр).
+                setQuestions(seededShuffle(data.questions as ExamQuestion[], `${user.uid}:${examId}`));
                 // Үлдсэн хугацааг СЕРВЕРИЙН эхлүүлсэн мөчөөс тооцно — бүх сурагчид ижил.
                 const examEndMs = (data.startedAt || examStartedAt) + data.duration * 60_000;
                 const remaining = Math.floor((examEndMs - getServerTimeValue()) / 1000);
@@ -486,6 +520,19 @@ export default function ExamPage() {
                 }
             } else {
                 setTimeLeft(remaining);
+
+                // ── Хугацаа дуусахад ойртсон анхааруулга ──────────────────
+                // Шалгалтын нийт хугацаанаас богино хязгаарууд дээр л ажиллана
+                // (жишээ нь 10 минутын шалгалтад «10 минут үлдлээ» гэж хэлэхгүй).
+                for (const mins of TIME_WARNINGS) {
+                    if (mins >= meta.duration) continue;
+                    const sec = mins * 60;
+                    if (remaining <= sec && !warnedRef.current.has(mins)) {
+                        warnedRef.current.add(mins);
+                        toast.warning(`${mins} минут үлдлээ!`, { duration: 6000 });
+                        playAlertSound();
+                    }
+                }
             }
         }, 1000);
 
@@ -1083,6 +1130,13 @@ export default function ExamPage() {
                 </div>
             )}
 
+            {/* Сүүлийн 1 минутын анхааруулах зурвас */}
+            {timeLeft > 0 && timeLeft <= 60 && !submitted && (
+                <div className="fixed top-0 inset-x-0 z-50 bg-red-600 text-white text-center py-3 font-black animate-pulse shadow-lg">
+                    ⏰ {timeLeft} секунд үлдлээ! Хариултаа шалгаад илгээнэ үү — хугацаа дуусахад автоматаар илгээгдэнэ
+                </div>
+            )}
+
             {/* Violation warning banner */}
             {showViolationWarning && (
                 <div role="alert" className="fixed top-0 inset-x-0 z-50 bg-red-600 text-white text-center py-3 font-bold animate-bounce">
@@ -1286,19 +1340,27 @@ export default function ExamPage() {
                                                         type="text"
                                                         inputMode="decimal"
                                                         autoComplete="off"
-                                                        className="w-full border-2 border-blue-200 bg-blue-50/40 rounded-2xl p-4 text-slate-900 font-black text-2xl tracking-wide text-center focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-blue-100 transition-all"
-                                                        placeholder={currentQ.answerFormat === "fraction" ? "жишээ: 5/6" : "жишээ: 12.5"}
+                                                        className={`w-full border-2 border-blue-200 bg-blue-50/40 rounded-2xl p-4 text-slate-900 font-black tracking-wide text-center focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-blue-100 transition-all ${currentQ.answerFormat === "numberList" ? "text-lg" : "text-2xl"}`}
+                                                        placeholder={
+                                                            currentQ.answerFormat === "fraction" ? "жишээ: 5/6"
+                                                                : currentQ.answerFormat === "numberList" ? "жишээ: 12, 25, 34"
+                                                                    : "жишээ: 12.5"
+                                                        }
                                                         value={answers[currentQ.id] || ""}
                                                         onChange={e => {
-                                                            // Зөвхөн цифр, тэмдэг, аравтын таслал, бутархайн зураас
-                                                            const onlyNumeric = e.target.value.replace(/[^\d.,/-]/g, "");
+                                                            // Зөвхөн цифр, тэмдэг, аравтын таслал, бутархайн зураас.
+                                                            // Жагсаалт хариулттай бол зай ба таслалыг ч зөвшөөрнө.
+                                                            const allowed = currentQ.answerFormat === "numberList" ? /[^\d.,\s/-]/g : /[^\d.,/-]/g;
+                                                            const onlyNumeric = e.target.value.replace(allowed, "");
                                                             setAnswers(prev => ({ ...prev, [currentQ.id]: onlyNumeric }));
                                                         }}
                                                     />
                                                     <p className="text-xs font-bold text-blue-700 text-center">
                                                         {currentQ.answerFormat === "fraction"
                                                             ? "Зөвхөн тоо бичнэ — бутархайг 5/6 хэлбэрээр (аравтаар бичсэн ч болно)"
-                                                            : "Зөвхөн тоо бичнэ — нэгж (см, км) бичих шаардлагагүй"}
+                                                            : currentQ.answerFormat === "numberList"
+                                                                ? "Бүх тоог бич — дараалал хамаарахгүй, таслал эсвэл зайгаар тусгаарла"
+                                                                : "Зөвхөн тоо бичнэ — нэгж (см, км) бичих шаардлагагүй"}
                                                     </p>
                                                 </div>
                                             ) : (

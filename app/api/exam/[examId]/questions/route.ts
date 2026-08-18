@@ -166,11 +166,15 @@ export async function GET(
         questions = questions.map((qn: { id: string; type?: string;[key: string]: unknown }) => {
             if (qn.type === "multiple_choice") return qn;
             const a = clean(answerKey[qn.id] || "");
+            // 2+ тоог таслал/цэг таслал/зайгаар тусгаарласан бол «жагсаалт»
+            const listParts = a.replace(/;/g, ",").split(/[,\s]+/).filter(Boolean);
             const answerFormat = /^-?\d+\s*\/\s*\d+$/.test(a)
                 ? "fraction"
                 : /^-?\d+([.,]\d+)?$/.test(a)
                     ? "number"
-                    : "text";
+                    : (listParts.length >= 2 && listParts.every(x => /^-?\d+([.]\d+)?$/.test(x)))
+                        ? "numberList"
+                        : "text";
             return { ...qn, answerFormat };
         });
     } catch (err) {
